@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+*.egg
+*.manifest
+*.spec
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Editor/IDE
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and databases
+*.log
+*.sqlite3
+*.db
+agent_state.db
+
+# Test caches
+.pytest_cache/
+coverage.xml
+htmlcov/
+
+# Node
+node_modules/
+frontend/node_modules/
+dist/
+
+# Env
+.env
+.env.*
+
+# Build
+build/
+dist/
+
+# Temporary files
+*.tmp
+*.swp
+
+# Secrets
+secrets.json
+
+# Local helper outputs
+.venv_pkgs.txt
+venv_pkgs.txt

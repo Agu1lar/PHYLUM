@@ -1,0 +1,43 @@
+Step-by-step to prepare repo and commit (Windows PowerShell)
+
+1) Verify .gitignore exists and will ignore virtualenvs:
+   Get-Content .gitignore | Out-Host
+
+2) Optional: Inspect the two virtualenvs and decide which to keep (.venv recommended):
+   .\.venv\Scripts\python.exe -m pip freeze > .venv_pkgs.txt
+   .\venv\Scripts\python.exe -m pip freeze > venv_pkgs.txt
+   # Compare:
+   Compare-Object (Get-Content .\.venv_pkgs.txt) (Get-Content .\venv_pkgs.txt)
+
+3) Optional: Remove the unwanted venv safely (this script prompts):
+   .\remove_venv.ps1
+   # or to force without prompt:
+   .\remove_venv.ps1 -Force
+
+4) Initialize git (if not already a repo):
+   git init
+
+5) Add files, verify venv is ignored:
+   git add .
+   git status --ignored
+
+6) Commit:
+   git commit -m "chore: initial project scaffold, CI workflow and .gitignore\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+
+7) Create remote and push (example for GitHub):
+   git remote add origin https://github.com/OWNER/REPO.git
+   git branch -M main
+   git push -u origin main
+
+8) Enable CI workflow on GitHub:
+   # Move ci_github.yml into .github/workflows/ci.yml (helper)
+   .\apply_ci.ps1
+   # Commit the workflow after move
+   git add .github/workflows/ci.yml
+   git commit -m "ci: add GitHub Actions workflow\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+   git push
+
+Notes:
+- Do not commit .venv or venv directories. .gitignore prevents accidental adds.
+- If you prefer to keep both virtualenvs, skip remove_venv.ps1.
+- Replace OWNER/REPO with your GitHub repository path.

@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+pydantic
+aiosqlite
+playwright
+typing_extensions
+langgraph

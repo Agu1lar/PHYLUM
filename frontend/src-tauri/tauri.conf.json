@@ -1,0 +1,12 @@
+﻿{
+  "package":{
+    "productName":"agente-desktop",
+    "version":"0.1.0"
+  },
+  "tauri":{
+    "windows":[],
+    "bundle":{
+      "active":false
+    }
+  }
+}
