@@ -1,44 +1,92 @@
-﻿import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 import { useStore } from '../state/store'
 
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://127.0.0.1:8000/ws'
+const WS_URL = (import.meta as any).env?.VITE_WS_URL || 'ws://127.0.0.1:8000/ws'
 
-export default function useSocket(){
-  const wsRef = useRef<WebSocket | null>(null)
-  const addMessage = useStore.getState().addMessage
-  const addLog = useStore.getState().addLog
-  const setConnected = useStore.getState().setConnected
+let sharedSocket: WebSocket | null = null
+let reconnectTimer: number | null = null
+let consumers = 0
+let retries = 0
 
-  useEffect(()=>{
-    let mounted = true
-    let retries = 0
-    function connect(){
-      const ws = new WebSocket(WS_URL)
-      wsRef.current = ws
-      ws.onopen = ()=>{ setConnected(true); retries=0; addLog({level:'info', msg:'WebSocket connected'}) }
-      ws.onmessage = (ev)=>{
-        try{
-          const d = JSON.parse(ev.data)
-          handleMessage(d)
-        }catch(e){ console.error(e) }
+function connect() {
+  if (sharedSocket && (sharedSocket.readyState === WebSocket.OPEN || sharedSocket.readyState === WebSocket.CONNECTING)) {
+    return sharedSocket
+  }
+  const socket = new WebSocket(WS_URL)
+  sharedSocket = socket
+  socket.onopen = () => {
+    retries = 0
+    useStore.getState().setConnected(true)
+  }
+  socket.onmessage = event => {
+    try {
+      const message = JSON.parse(event.data)
+      if (message.type === 'pong') {
+        return
       }
-      ws.onclose = ()=>{ setConnected(false); addLog({level:'warn', msg:'WebSocket closed'}); if(mounted) setTimeout(()=>connect(), Math.min(10000, 1000*(2**retries))); retries++ }
-      ws.onerror = (e)=>{ addLog({level:'error', msg:'WebSocket error'}); ws.close() }
+      useStore.getState().applyEvent(message)
+      if (message.type === 'run_finished') {
+        useStore.getState().addMessage({
+          role: 'agent',
+          text: message.payload?.reflection?.summary ?? 'Execucao concluida.',
+        })
+      }
+      if (message.type === 'run_failed') {
+        useStore.getState().addMessage({ role: 'agent', text: `Execucao falhou: ${message.payload?.error ?? 'erro desconhecido'}` })
+      }
+      if (message.type === 'run_cancelled') {
+        useStore.getState().addMessage({ role: 'agent', text: 'Execucao cancelada.' })
+      }
+      if (message.type === 'user_input_requested') {
+        useStore.getState().addMessage({
+          role: 'agent',
+          text: message.payload?.handoff?.prompt ?? 'Preciso de mais contexto para continuar.',
+        })
+      }
+      if (message.type === 'run_paused') {
+        useStore.getState().addMessage({ role: 'agent', text: 'Execucao pausada aguardando sua resposta.' })
+      }
+      if (message.type === 'task_retry_scheduled') {
+        useStore.getState().addMessage({ role: 'agent', text: 'Estou tentando uma estrategia alternativa para continuar a run.' })
+      }
+    } catch (error) {
+      console.error(error)
     }
-    function handleMessage(d:any){
-      if(d.type === 'chat'){ addMessage({role:'agent', text:d.text}) }
-      if(d.type === 'log'){ addLog(d.payload) }
-      if(d.type === 'approval'){ useStore.getState().addApproval(d.payload) }
-      if(d.type === 'task'){ useStore.getState().addTask(d.payload) }
-      if(d.type === 'history'){ useStore.getState().addHistory(d.payload) }
-      if(d.type === 'tool'){ useStore.getState().addTool(d.payload) }
-      if(d.type === 'terminal'){ useStore.getState().addTerminalLine(d.payload) }
+  }
+  socket.onclose = () => {
+    useStore.getState().setConnected(false)
+    if (consumers > 0) {
+      const delay = Math.min(10000, 1000 * 2 ** retries)
+      retries += 1
+      reconnectTimer = window.setTimeout(() => {
+        connect()
+      }, delay)
     }
+  }
+  socket.onerror = () => {
+    socket.close()
+  }
+  return socket
+}
+
+export default function useSocket() {
+  useEffect(() => {
+    consumers += 1
     connect()
-    return ()=>{ mounted=false; wsRef.current?.close() }
+    return () => {
+      consumers -= 1
+      if (consumers <= 0) {
+        if (reconnectTimer !== null) {
+          window.clearTimeout(reconnectTimer)
+          reconnectTimer = null
+        }
+        sharedSocket?.close()
+        sharedSocket = null
+      }
+    }
   }, [])
 
   return {
-    send: (obj:any)=>{ try{ wsRef.current?.send(JSON.stringify(obj)) }catch(e){ console.error(e) } }
+    connected: useStore(state => state.connected),
   }
 }

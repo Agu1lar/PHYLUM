@@ -33,10 +33,18 @@ class ShellTool(BaseTool):
         if payload.shell not in ('powershell', 'cmd'):
             raise ValueError('unsupported shell')
 
-    async def _run(self, payload: ShellInput) -> ShellOutput:
+    async def _run(self, payload: ShellInput, cancel_event=None) -> ShellOutput:
         timeout = payload.timeout or self.default_timeout
         retries = payload.retries if payload.retries is not None else self.default_retries
         # delegate to executor
-        resp = await self.executor.execute(payload.command, shell=payload.shell, timeout=timeout, retries=retries, require_admin=payload.require_admin, allow_protected_paths=payload.allow_protected_paths)
+        resp = await self.executor.execute(
+            payload.command,
+            shell=payload.shell,
+            timeout=timeout,
+            retries=retries,
+            require_admin=payload.require_admin,
+            cancel_event=cancel_event,
+            allow_protected_paths=payload.allow_protected_paths,
+        )
         logger.info('ShellTool executed command; ok=%s rc=%s', resp.ok, resp.result.returncode if resp.result else None)
         return ShellOutput(structured=resp)

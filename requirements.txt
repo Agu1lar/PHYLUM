@@ -5,3 +5,8 @@ aiosqlite
 playwright
 typing_extensions
 langgraph
+httpx
+keyring
+psutil
+WMI
+pywin32

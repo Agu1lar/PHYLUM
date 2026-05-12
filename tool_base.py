@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import inspect
 import logging
 from typing import Any, Dict, Optional, Type
 from pydantic import BaseModel
@@ -34,7 +35,13 @@ class BaseTool:
     async def _run(self, payload: BaseModel) -> BaseModel:
         raise NotImplementedError()
 
-    async def run(self, payload: Dict[str, Any], timeout: Optional[int] = None, retries: Optional[int] = None) -> BaseModel:
+    async def run(
+        self,
+        payload: Dict[str, Any],
+        timeout: Optional[int] = None,
+        retries: Optional[int] = None,
+        cancel_event: Optional[asyncio.Event] = None,
+    ) -> BaseModel:
         # parse and validate
         timeout = timeout or self.default_timeout
         retries = retries if retries is not None else self.default_retries
@@ -46,7 +53,11 @@ class BaseTool:
             try:
                 self.logger.info("Tool %s attempt %s/%s", self.__class__.__name__, attempt, retries)
                 # enforce per-attempt timeout
-                result = await asyncio.wait_for(self._run(input_model), timeout=timeout)
+                if "cancel_event" in inspect.signature(self._run).parameters:
+                    run_coro = self._run(input_model, cancel_event=cancel_event)
+                else:
+                    run_coro = self._run(input_model)
+                result = await asyncio.wait_for(run_coro, timeout=timeout)
                 # cast/validate result with OutputModel
                 if hasattr(self, 'OutputModel') and self.OutputModel is not None:
                     out = self.OutputModel(**(result.dict() if isinstance(result, BaseModel) else result))

@@ -6,11 +6,17 @@ from fs_utils import list_files, safe_move, safe_delete, compute_hash, ensure_wo
 from fs_classifier import FileClassifier
 from duplicate_detector import find_duplicates
 from rollback_manager import RollbackManager, OperationRecord
-from monitor import DirectoryMonitor
 from fs_config import DESKTOP_DIR, DOWNLOADS_DIR
 from pydantic import BaseModel
 import uuid
 import time
+
+try:
+    from monitor import DirectoryMonitor
+except Exception:  # pragma: no cover - optional dependency for live monitoring only
+    class DirectoryMonitor:  # type: ignore[override]
+        def start(self, paths, callback, recursive: bool = True):
+            raise RuntimeError("watchdog is not installed; directory monitoring is unavailable")
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)

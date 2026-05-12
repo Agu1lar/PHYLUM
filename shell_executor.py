@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import subprocess
 import shlex
 import time
 from typing import Optional, Dict, Any, List
@@ -18,6 +19,20 @@ class ShellExecutor:
         self.validator = CommandValidator(blacklist=blacklist, whitelist=whitelist)
         self.default_retries = default_retries
 
+    async def _terminate_process_tree(self, pid: Optional[int]) -> None:
+        if not pid:
+            return
+        try:
+            await asyncio.to_thread(
+                subprocess.run,
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+        except Exception:
+            logger.exception("Error terminating process tree for pid=%s", pid)
+
     async def _spawn(self, cmd_list: List[str], timeout: int, cancel_event: Optional[asyncio.Event] = None) -> Dict[str, Any]:
         logger.debug("Spawning process: %s", cmd_list)
         start = time.time()
@@ -31,7 +46,7 @@ class ShellExecutor:
             await cancel_event.wait()
             try:
                 logger.info("Cancellation requested - terminating pid %s", pid)
-                proc.terminate()
+                await self._terminate_process_tree(pid)
             except ProcessLookupError:
                 logger.warning("Process already exited")
 
@@ -45,15 +60,37 @@ class ShellExecutor:
             stdout = stdout_bytes.decode(errors='ignore') if stdout_bytes else ''
             stderr = stderr_bytes.decode(errors='ignore') if stderr_bytes else ''
             logger.debug("Process %s exited with %s", pid, proc.returncode)
-            return {"stdout": stdout, "stderr": stderr, "returncode": proc.returncode, "pid": pid, "duration": duration}
+            cancelled = bool(cancel_event and cancel_event.is_set())
+            return {
+                "stdout": stdout,
+                "stderr": stderr,
+                "returncode": proc.returncode,
+                "pid": pid,
+                "duration": duration,
+                "cancelled": cancelled,
+                "timed_out": False,
+            }
         except asyncio.TimeoutError:
             logger.warning("Process %s timed out after %s seconds - killing", pid, timeout)
             try:
-                proc.kill()
+                await self._terminate_process_tree(pid)
             except Exception:
                 logger.exception("Error killing process %s", pid)
             duration = time.time() - start
-            return {"stdout": '', "stderr": 'timeout', "returncode": -1, "pid": pid, "duration": duration}
+            return {
+                "stdout": '',
+                "stderr": 'timeout',
+                "returncode": -1,
+                "pid": pid,
+                "duration": duration,
+                "cancelled": False,
+                "timed_out": True,
+            }
+        except asyncio.CancelledError:
+            logger.warning("Process %s cancelled by asyncio task", pid)
+            await self._terminate_process_tree(pid)
+            duration = time.time() - start
+            raise asyncio.CancelledError() from None
         finally:
             if cancel_task is not None:
                 cancel_task.cancel()
@@ -90,18 +127,47 @@ class ShellExecutor:
                 logger.info("Executing attempt %s/%s: %s (shell=%s elevated=%s)", attempt, retries, command, shell, meta.admin_granted)
                 result = await self._spawn(cmd_list, timeout=timeout, cancel_event=cancel_event)
                 res_model = CommandResult(stdout=result['stdout'], stderr=result['stderr'], returncode=result['returncode'], duration_seconds=result['duration'], pid=result.get('pid'))
-                ok = result['returncode'] == 0
-                structured = StructuredResponse(ok=ok, meta=meta, result=res_model, risk=ExecutionRisk(level=classification['level'], tags=classification['tags'], reason=classification['reason']), error=None if ok else 'non-zero-exit', cancelled=(result['returncode'] == -1 and result['stderr'] == 'timeout'), raw=result)
+                timed_out = bool(result.get("timed_out"))
+                cancelled = bool(result.get("cancelled"))
+                ok = result['returncode'] == 0 and not timed_out and not cancelled
+                error = None
+                if cancelled:
+                    error = 'cancelled'
+                elif timed_out:
+                    error = 'timeout'
+                elif not ok:
+                    error = 'non-zero-exit'
+                structured = StructuredResponse(
+                    ok=ok,
+                    meta=meta,
+                    result=res_model,
+                    risk=ExecutionRisk(level=classification['level'], tags=classification['tags'], reason=classification['reason']),
+                    error=error,
+                    cancelled=cancelled,
+                    raw=result,
+                )
                 logger.info("Execution finished (attempt %s) pid=%s rc=%s duration=%.2fs", attempt, result.get('pid'), result.get('returncode'), result.get('duration'))
-                if ok:
+                if ok or cancelled:
                     return structured
+                if timed_out:
+                    last_err = structured
+                    await asyncio.sleep(min(2 ** attempt, 10))
+                    continue
                 else:
                     last_err = structured
                     # backoff before retry
                     await asyncio.sleep(min(2 ** attempt, 10))
             except asyncio.CancelledError:
                 logger.warning("Execution cancelled by asyncio.CancelledError")
-                return StructuredResponse(ok=False, meta=meta, result=None, risk=ExecutionRisk(level=classification['level'], tags=classification['tags'], reason=classification['reason']), error='cancelled', cancelled=True)
+                return StructuredResponse(
+                    ok=False,
+                    meta=meta,
+                    result=None,
+                    risk=ExecutionRisk(level=classification['level'], tags=classification['tags'], reason=classification['reason']),
+                    error='cancelled',
+                    cancelled=True,
+                    raw={"cancelled": True, "timed_out": False},
+                )
             except Exception as exc:
                 logger.exception("Execution attempt %s failed: %s", attempt, exc)
                 last_err = StructuredResponse(ok=False, meta=meta, result=None, risk=ExecutionRisk(level=classification['level'], tags=classification['tags'], reason=classification['reason']), error=str(exc), cancelled=False)

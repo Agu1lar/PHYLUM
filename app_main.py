@@ -1,26 +1,20 @@
 import asyncio
 import json
 import logging
-import uuid
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
 
 from pydantic import BaseModel
 
-from builder import GraphBuilder
 from agent_persistence import Persistence
-from agent_executor import ExecutionEngine
-from nodes_planner import PlannerNode
-from nodes_safety import SafetyNode
-from nodes_shell import ShellNode
-from nodes_filesystem import FileSystemNode
-from nodes_memory import MemoryNode
-from nodes_reflection import ReflectionNode
-from nodes_browser import BrowserNode
-from nodes_os import OSNode
+from canonical_tools import tool_definitions
+from credential_store import CredentialPayload, CredentialStore
+from multi_provider_client import MultiProviderClient
+from runtime_manager import RuntimeManager
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -42,31 +36,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# build graph
-builder = GraphBuilder()
-builder.add_node('planner', PlannerNode('planner'))
-builder.add_node('safety', SafetyNode('safety'))
-builder.add_node('shell', ShellNode('shell'))
-builder.add_node('filesystem', FileSystemNode('filesystem'))
-builder.add_node('memory', MemoryNode('memory'))
-builder.add_node('reflection', ReflectionNode('reflection'))
-builder.add_node('browser', BrowserNode('browser'))
-builder.add_node('os', OSNode('os'))
-# edges
-builder.add_edge('planner', 'safety')
-builder.add_edge('safety', 'shell', meta={"retries": 2})
-builder.add_edge('shell', 'filesystem', parallel=True)
-builder.add_edge('shell', 'memory', parallel=True)
-builder.add_edge('filesystem', 'reflection')
-
-graph = builder.build()
-engine = ExecutionEngine(graph)
-
 persistence = Persistence.get()
+credential_store = CredentialStore(persistence)
+provider_client = MultiProviderClient()
+runtime: Optional[RuntimeManager] = None
 
 class RunRequest(BaseModel):
-    inputs: dict
+    inputs: Dict[str, Any]
     await_human: bool = False
+    runtime_mode: str = "agentic"
+    provider: Optional[str] = None
+    model: Optional[str] = None
+
+
+class ProviderTestRequest(BaseModel):
+    model: Optional[str] = None
+
+
+class RunReplyRequest(BaseModel):
+    response: Dict[str, Any]
 
 
 # WebSocket broadcaster state
@@ -75,6 +63,9 @@ async def startup():
     app.state.connections = set()
     app.state.broadcast_queue = asyncio.Queue()
     app.state.broadcaster = asyncio.create_task(broadcaster_task())
+    global runtime
+    runtime = RuntimeManager(emit_event, credential_store=credential_store, provider_client=provider_client)
+    await runtime.rehydrate_runs()
 
 
 @app.on_event("shutdown")
@@ -97,6 +88,10 @@ async def broadcaster_task():
             app.state.connections.discard(r)
 
 
+async def emit_event(message: Dict[str, Any]):
+    await app.state.broadcast_queue.put(jsonable_encoder(message))
+
+
 @app.websocket('/ws')
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
@@ -104,62 +99,163 @@ async def websocket_endpoint(ws: WebSocket):
     try:
         while True:
             data = await ws.receive_text()
-            # echo back or ignore
-            await ws.send_text(json.dumps({"received": data}))
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                payload = {"type": "raw", "payload": data}
+            if payload.get("type") == "ping":
+                await ws.send_text(json.dumps({"type": "pong", "payload": {}}))
     except WebSocketDisconnect:
         app.state.connections.discard(ws)
 
 
 @app.post('/run')
 async def run(req: RunRequest):
-    request_id = str(uuid.uuid4())
-    state = {"request_id": request_id, "created_at": None, "last_updated": None, "inputs": req.inputs, "outputs": {}, "history": {}}
-    await persistence.save_kv(f"state:{request_id}", state)
-
-    # notify websocket listeners
-    await app.state.broadcast_queue.put({"event": "run_started", "request_id": request_id, "inputs": req.inputs})
-
-    # schedule execution
-    loop = asyncio.get_event_loop()
-    loop.create_task(engine.execute('planner', state))
-    return JSONResponse({"request_id": request_id})
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    inputs = dict(req.inputs)
+    if req.await_human:
+        inputs["force_approval"] = True
+    request_id = await runtime.submit_run(
+        inputs,
+        runtime_mode=req.runtime_mode,
+        provider=req.provider,
+        model=req.model,
+    )
+    state = await runtime.get_state(request_id)
+    return JSONResponse({"request_id": request_id, "state": jsonable_encoder(state)})
 
 
 @app.get('/state/{request_id}')
 async def get_state(request_id: str):
-    s = await persistence.get_kv(f"state:{request_id}")
+    if runtime is not None:
+        s = await runtime.get_state(request_id)
+    else:
+        s = await persistence.get_kv(f"state:{request_id}")
     if s is None:
         raise HTTPException(404, "Not found")
     return s
 
 
+@app.get('/runs')
+async def list_runs():
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    return {"runs": await runtime.list_runs()}
+
+
+@app.post('/run/{request_id}/cancel')
+async def cancel_run(request_id: str):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    try:
+        result = await runtime.cancel_run(request_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="run not found")
+    state = await runtime.get_state(request_id)
+    return {"ok": True, "result": result, "state": jsonable_encoder(state)}
+
+
+@app.post('/run/{request_id}/reply')
+async def reply_run(request_id: str, payload: RunReplyRequest):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    try:
+        result = await runtime.reply_to_run(request_id, payload.response)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="run not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    state = await runtime.get_state(request_id)
+    return {"ok": True, "result": result, "state": jsonable_encoder(state)}
+
+
+@app.post('/run/{request_id}/resume')
+async def resume_run(request_id: str):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    try:
+        result = await runtime.resume_run(request_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="run not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    state = await runtime.get_state(request_id)
+    return {"ok": True, "result": result, "state": jsonable_encoder(state)}
+
+
 @app.post('/approval/{approval_id}')
 async def set_approval(approval_id: str, payload: dict):
-    await persistence.set_approval(approval_id, payload.get('status', 'approved'))
-    return {"ok": True}
-
-
-# Simple tool run endpoint (for manual testing)
-TOOLS = {
-    "filesystem": FileSystemNode('filesystem'),
-    "shell": ShellNode('shell'),
-}
-
-
-@app.post('/run/tool/{tool_name}')
-async def run_tool(tool_name: str, payload: Dict[str, Any]):
-    tool = TOOLS.get(tool_name)
-    if not tool:
-        raise HTTPException(status_code=404, detail="tool not found")
-    # broadcast start
-    await app.state.broadcast_queue.put({"event": "tool_started", "tool": tool_name, "payload": payload})
+    status = payload.get('status', 'approved')
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
     try:
-        # tool.run expects payload dict via the tool implementation
-        result = await tool.execute({'inputs': payload})
-        out = result
-        await app.state.broadcast_queue.put({"event": "tool_finished", "tool": tool_name, "result": out})
-        return JSONResponse(content=out)
-    except Exception as exc:
-        logger.exception("Tool run failed")
-        await app.state.broadcast_queue.put({"event": "tool_failed", "tool": tool_name, "error": str(exc)})
+        result = await runtime.resolve_approval(approval_id, status)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="approval not found")
+    return {"ok": True, "approval": result}
+
+
+@app.post('/request_approval')
+async def request_approval(payload: Dict[str, Any]):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    approval = await runtime.request_manual_approval(payload)
+    return {"approval_id": approval["approval_id"]}
+
+
+@app.get('/approvals')
+async def list_approvals(request_id: Optional[str] = None):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    return {"approvals": await runtime.list_approvals(request_id=request_id)}
+
+
+@app.get('/tools')
+async def list_tools():
+    return {"tools": tool_definitions()}
+
+
+@app.get('/settings/providers')
+async def list_settings_providers():
+    providers = await credential_store.list_provider_settings()
+    return {"providers": providers}
+
+
+@app.post('/settings/providers/{provider}/credential')
+async def save_provider_credential(provider: str, payload: CredentialPayload):
+    try:
+        settings = await credential_store.save_credential(provider, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+    return {"provider": settings}
+
+
+@app.delete('/settings/providers/{provider}/credential')
+async def delete_provider_credential(provider: str):
+    try:
+        await credential_store.delete_credential(provider)
+        settings = await credential_store.get_provider_settings(provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"ok": True, "provider": settings}
+
+
+@app.post('/settings/providers/{provider}/test')
+async def test_provider_connection(provider: str, payload: ProviderTestRequest):
+    try:
+        config = await credential_store.resolve_runtime_config(provider, model=payload.model)
+        result = await provider_client.test_connection(
+            provider=config["provider"],
+            api_key=config["api_key"],
+            base_url=config.get("base_url"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return result
