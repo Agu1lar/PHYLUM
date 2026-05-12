@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react'
+import { getApiBase } from '../lib/runtimeConfig'
 import { useStore } from '../state/store'
 
 const HandoffPanel: React.FC = () => {
@@ -6,7 +7,7 @@ const HandoffPanel: React.FC = () => {
   const pendingHandoff = currentRun?.pending_handoff ?? null
   const [text, setText] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://127.0.0.1:8000'
+  const API_BASE = getApiBase()
 
   const placeholder = useMemo(() => {
     if (!pendingHandoff) return ''

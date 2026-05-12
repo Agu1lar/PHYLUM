@@ -32,8 +32,8 @@ PROVIDERS: Dict[str, ProviderDefinition] = {
     "anthropic": ProviderDefinition(
         provider="anthropic",
         display_name="Anthropic",
-        models=["claude-3-5-sonnet-latest", "claude-3-7-sonnet-latest"],
-        default_model="claude-3-5-sonnet-latest",
+        models=["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001"],
+        default_model="claude-sonnet-4-6",
         base_url="https://api.anthropic.com/v1",
     ),
     "openrouter": ProviderDefinition(
@@ -54,6 +54,21 @@ PROVIDERS: Dict[str, ProviderDefinition] = {
 }
 
 
+MODEL_ALIASES: Dict[str, Dict[str, str]] = {
+    "anthropic": {
+        "claude": "claude-sonnet-4-6",
+        "claude sonnet": "claude-sonnet-4-6",
+        "claude-sonnet": "claude-sonnet-4-6",
+        "claude opus": "claude-opus-4-7",
+        "claude-opus": "claude-opus-4-7",
+        "claude haiku": "claude-haiku-4-5-20251001",
+        "claude-haiku": "claude-haiku-4-5-20251001",
+        "claude-3-5-sonnet-latest": "claude-sonnet-4-6",
+        "claude-3-7-sonnet-latest": "claude-sonnet-4-6",
+    }
+}
+
+
 def get_provider(provider: str) -> ProviderDefinition:
     normalized = provider.strip().lower()
     if normalized not in PROVIDERS:
@@ -63,3 +78,14 @@ def get_provider(provider: str) -> ProviderDefinition:
 
 def list_provider_definitions() -> List[ProviderDefinition]:
     return list(PROVIDERS.values())
+
+
+def normalize_model(provider: str, model: Optional[str]) -> Optional[str]:
+    if model is None:
+        return None
+    normalized_model = model.strip()
+    if not normalized_model:
+        return None
+    provider_id = get_provider(provider).provider
+    alias_map = MODEL_ALIASES.get(provider_id, {})
+    return alias_map.get(normalized_model.lower(), normalized_model)

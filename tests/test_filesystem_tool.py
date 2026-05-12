@@ -10,9 +10,9 @@ async def test_filesystem_write_and_read(tmp_path):
     file = tmp_path / "test.txt"
     payload = {"action": "write", "path": str(file), "content": "hello world", "backup": False}
     res = await tool.run(payload)
-    assert res.success
+    assert res.status == "succeeded"
     # read back
     payload2 = {"action": "read", "path": str(file)}
     res2 = await tool.run(payload2)
-    assert res2.success
-    assert 'hello world' in res2.details.get('content')
+    assert res2.status == "succeeded"
+    assert 'hello world' in res2.data.get('content')

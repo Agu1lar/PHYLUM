@@ -7,4 +7,13 @@
   --panel:#0f1720;
 }
 
-body{background:var(--bg);} 
+html,
+body,
+#root{
+  height:100%;
+}
+
+body{
+  margin:0;
+  background:var(--bg);
+}

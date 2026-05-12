@@ -78,6 +78,8 @@ async def test_runtime_manager_emits_approval_and_finishes_after_approval(tmp_pa
         raise AssertionError("approval was not requested")
 
     approval_id = state["approvals"][0]["approval_id"]
+    approval_text = (state["approvals"][0]["title"] + " " + state["approvals"][0]["reason"]).lower()
+    assert str(target_file).lower() in approval_text
     await manager.resolve_approval(approval_id, "approved")
     final_state = await manager.wait_for_run(request_id, timeout=10)
 
@@ -120,8 +122,40 @@ async def test_runtime_manager_fails_when_approval_is_rejected(tmp_path, isolate
 
     assert final_state["status"] == "failed"
     assert final_state["error"] == "approval rejected"
+    assert "Nao continuei porque a acao que precisava da sua aprovacao foi rejeitada." in final_state["outputs"]["final_reflection"]["summary"]
     assert not target_file.exists()
     assert events[-1]["type"] == "run_failed"
+    assert "Nao continuei porque a acao que precisava da sua aprovacao foi rejeitada." in events[-1]["payload"]["user_message"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_manager_requests_approval_instead_of_failing_for_outside_sandbox_list(isolated_persistence):
+    events = []
+
+    async def emitter(message):
+        events.append(message)
+
+    manager = RuntimeManager(emitter)
+    request_id = await manager.submit_run({"text": r"list files C:\Windows", "allow_local_execution": True})
+
+    for _ in range(100):
+        state = await manager.get_state(request_id)
+        if state and state["approvals"]:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        raise AssertionError("approval was not requested")
+
+    assert state["status"] == "awaiting_approval"
+    assert any(r"c:\windows" in (approval["title"] + " " + approval["reason"]).lower() for approval in state["approvals"])
+    assert not any(event["type"] == "run_failed" for event in events)
+
+    approval_id = state["approvals"][0]["approval_id"]
+    await manager.resolve_approval(approval_id, "approved")
+    final_state = await manager.wait_for_run(request_id, timeout=10)
+
+    assert final_state["status"] == "completed"
+    assert final_state["tasks"][0]["result"]["tool_result"]["details"]["items"] is not None
 
 
 @pytest.mark.asyncio

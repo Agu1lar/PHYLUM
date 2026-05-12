@@ -1,7 +1,6 @@
 import { useEffect } from 'react'
+import { getWsUrl } from '../lib/runtimeConfig'
 import { useStore } from '../state/store'
-
-const WS_URL = (import.meta as any).env?.VITE_WS_URL || 'ws://127.0.0.1:8000/ws'
 
 let sharedSocket: WebSocket | null = null
 let reconnectTimer: number | null = null
@@ -12,7 +11,7 @@ function connect() {
   if (sharedSocket && (sharedSocket.readyState === WebSocket.OPEN || sharedSocket.readyState === WebSocket.CONNECTING)) {
     return sharedSocket
   }
-  const socket = new WebSocket(WS_URL)
+  const socket = new WebSocket(getWsUrl())
   sharedSocket = socket
   socket.onopen = () => {
     retries = 0
@@ -32,7 +31,10 @@ function connect() {
         })
       }
       if (message.type === 'run_failed') {
-        useStore.getState().addMessage({ role: 'agent', text: `Execucao falhou: ${message.payload?.error ?? 'erro desconhecido'}` })
+        useStore.getState().addMessage({
+          role: 'agent',
+          text: message.payload?.user_message ?? message.payload?.reflection?.summary ?? 'Nao consegui concluir a tarefa.',
+        })
       }
       if (message.type === 'run_cancelled') {
         useStore.getState().addMessage({ role: 'agent', text: 'Execucao cancelada.' })

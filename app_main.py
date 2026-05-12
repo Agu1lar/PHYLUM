@@ -1,10 +1,14 @@
 import asyncio
+import ctypes
+import importlib.util
 import json
 import logging
-from typing import Any, Dict, Optional
+import platform
+from pathlib import Path
+from typing import Any, Dict, Literal, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 
@@ -40,6 +44,8 @@ persistence = Persistence.get()
 credential_store = CredentialStore(persistence)
 provider_client = MultiProviderClient()
 runtime: Optional[RuntimeManager] = None
+PROJECT_ROOT = Path(__file__).resolve().parent
+INSTALLER_DIR = PROJECT_ROOT / "frontend" / "src-tauri" / "target" / "release" / "bundle" / "nsis"
 
 class RunRequest(BaseModel):
     inputs: Dict[str, Any]
@@ -55,6 +61,10 @@ class ProviderTestRequest(BaseModel):
 
 class RunReplyRequest(BaseModel):
     response: Dict[str, Any]
+
+
+class ApprovalResolutionRequest(BaseModel):
+    status: Literal["approved", "rejected", "approve", "reject", "accepted", "denied", "deny"] = "approved"
 
 
 # WebSocket broadcaster state
@@ -156,6 +166,17 @@ async def cancel_run(request_id: str):
     return {"ok": True, "result": result, "state": jsonable_encoder(state)}
 
 
+@app.delete('/run/{request_id}')
+async def delete_run(request_id: str):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    try:
+        result = await runtime.delete_run(request_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="run not found")
+    return {"ok": True, "result": result}
+
+
 @app.post('/run/{request_id}/reply')
 async def reply_run(request_id: str, payload: RunReplyRequest):
     if runtime is None:
@@ -185,8 +206,15 @@ async def resume_run(request_id: str):
 
 
 @app.post('/approval/{approval_id}')
-async def set_approval(approval_id: str, payload: dict):
-    status = payload.get('status', 'approved')
+async def set_approval(approval_id: str, payload: ApprovalResolutionRequest):
+    aliases = {
+        "approve": "approved",
+        "accepted": "approved",
+        "reject": "rejected",
+        "deny": "rejected",
+        "denied": "rejected",
+    }
+    status = aliases.get(payload.status, payload.status)
     if runtime is None:
         raise HTTPException(status_code=503, detail="runtime not ready")
     try:
@@ -194,6 +222,77 @@ async def set_approval(approval_id: str, payload: dict):
     except KeyError:
         raise HTTPException(status_code=404, detail="approval not found")
     return {"ok": True, "approval": result}
+
+
+@app.get('/health')
+async def healthcheck():
+    return {"ok": True, "service": "agente-desktop-backend"}
+
+
+def _latest_windows_installer_path() -> Optional[Path]:
+    if not INSTALLER_DIR.exists():
+        return None
+    candidates = sorted(INSTALLER_DIR.glob("*.exe"), key=lambda item: item.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _has_module(module_name: str) -> bool:
+    return importlib.util.find_spec(module_name) is not None
+
+
+def _is_admin() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+async def _doctor_payload() -> Dict[str, Any]:
+    providers = await credential_store.list_provider_settings()
+    installer = _latest_windows_installer_path()
+    capabilities = {
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "is_admin": _is_admin(),
+        "installer_available": installer is not None,
+        "desktop_host": installer.name if installer else None,
+        "providers_configured": len([item for item in providers if item.get("configured")]),
+        "dependencies": {
+            "playwright": _has_module("playwright"),
+            "pywinauto": _has_module("pywinauto"),
+            "win32com": _has_module("win32com"),
+            "pypdf": _has_module("pypdf"),
+            "extract_msg": _has_module("extract_msg"),
+        },
+        "runtime": {
+            "rehydrated_runs": len(await persistence.list_states()),
+            "active_connections": len(getattr(app.state, "connections", [])),
+        },
+    }
+    warnings = []
+    if not capabilities["providers_configured"]:
+        warnings.append("Nenhum provedor de IA esta configurado; o modo agentic vai cair para assistencia manual.")
+    if not capabilities["dependencies"]["pywinauto"]:
+        warnings.append("UI Automation nativa ainda nao esta pronta porque pywinauto nao esta instalado.")
+    if not capabilities["dependencies"]["win32com"]:
+        warnings.append("Office COM nao esta disponivel; automacoes de Word/Excel/Outlook ficarao limitadas.")
+    return {"ok": len(warnings) == 0, "capabilities": capabilities, "warnings": warnings}
+
+
+@app.get('/downloads/windows-installer/meta')
+async def windows_installer_meta():
+    installer = _latest_windows_installer_path()
+    if installer is None:
+        return {"available": False, "filename": None}
+    return {"available": True, "filename": installer.name}
+
+
+@app.get('/downloads/windows-installer')
+async def download_windows_installer():
+    installer = _latest_windows_installer_path()
+    if installer is None:
+        raise HTTPException(status_code=404, detail="windows installer not found")
+    return FileResponse(path=installer, filename=installer.name, media_type="application/octet-stream")
 
 
 @app.post('/request_approval')
@@ -214,6 +313,42 @@ async def list_approvals(request_id: Optional[str] = None):
 @app.get('/tools')
 async def list_tools():
     return {"tools": tool_definitions()}
+
+
+@app.get('/diagnostics/doctor')
+async def diagnostics_doctor():
+    return await _doctor_payload()
+
+
+@app.get('/onboarding/capabilities')
+async def onboarding_capabilities():
+    payload = await _doctor_payload()
+    capabilities = payload["capabilities"]
+    return {
+        "steps": [
+            {
+                "id": "provider",
+                "label": "Configurar um provedor de IA",
+                "ready": capabilities["providers_configured"] > 0,
+            },
+            {
+                "id": "uia",
+                "label": "Instalar dependencias de UI Automation nativa",
+                "ready": capabilities["dependencies"]["pywinauto"],
+            },
+            {
+                "id": "office",
+                "label": "Habilitar automacao Office COM",
+                "ready": capabilities["dependencies"]["win32com"],
+            },
+            {
+                "id": "desktop_host",
+                "label": "Instalar o app desktop",
+                "ready": capabilities["installer_available"],
+            },
+        ],
+        "doctor": payload,
+    }
 
 
 @app.get('/settings/providers')

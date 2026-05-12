@@ -40,7 +40,8 @@ TOOL_KEYWORDS = {
     'install': {'tool': 'package_manager', 'action': 'install'},
     'uninstall': {'tool': 'package_manager', 'action': 'uninstall'},
     'download': {'tool': 'browser', 'action': 'download'},
-    'open': {'tool': 'browser', 'action': 'open_page'},
+    'open url': {'tool': 'browser', 'action': 'open_page'},
+    'browse to': {'tool': 'browser', 'action': 'open_page'},
     'search': {'tool': 'browser', 'action': 'search'},
     'scrape': {'tool': 'browser', 'action': 'scrape_structured'},
     'search web': {'tool': 'web', 'action': 'search_web'},
@@ -79,13 +80,47 @@ TOOL_KEYWORDS = {
     'set clipboard': {'tool': 'desktop', 'action': 'clipboard_set'},
     'copy to clipboard': {'tool': 'desktop', 'action': 'clipboard_set'},
     'list windows': {'tool': 'desktop', 'action': 'list_windows'},
+    'list explorer windows': {'tool': 'desktop', 'action': 'list_explorer_windows'},
+    'list file explorer windows': {'tool': 'desktop', 'action': 'list_explorer_windows'},
+    'list open folders': {'tool': 'desktop', 'action': 'list_explorer_windows'},
+    'list mapped drives': {'tool': 'desktop', 'action': 'list_mapped_drives'},
+    'mapped drives': {'tool': 'desktop', 'action': 'list_mapped_drives'},
+    'list explorer selection': {'tool': 'desktop', 'action': 'get_explorer_selection'},
+    'selected files': {'tool': 'desktop', 'action': 'get_explorer_selection'},
+    'open app': {'tool': 'desktop', 'action': 'open_app'},
+    'launch app': {'tool': 'desktop', 'action': 'open_app'},
+    'open folder': {'tool': 'desktop', 'action': 'open_path'},
+    'open path': {'tool': 'desktop', 'action': 'open_path'},
+    'open file': {'tool': 'desktop', 'action': 'open_file'},
+    'wait for window': {'tool': 'desktop', 'action': 'wait_for_window'},
     'focus window': {'tool': 'desktop', 'action': 'focus_window'},
+    'close window': {'tool': 'desktop', 'action': 'close_window'},
+    'kill process': {'tool': 'desktop', 'action': 'kill_process'},
     'notify': {'tool': 'desktop', 'action': 'notify'},
     'notification': {'tool': 'desktop', 'action': 'notify'},
     'list services': {'tool': 'desktop', 'action': 'list_services'},
     'start service': {'tool': 'desktop', 'action': 'service_action'},
     'stop service': {'tool': 'desktop', 'action': 'service_action'},
     'restart service': {'tool': 'desktop', 'action': 'service_action'},
+    'inspect window': {'tool': 'windows_ui', 'action': 'inspect_window'},
+    'list elements': {'tool': 'windows_ui', 'action': 'list_elements'},
+    'find element': {'tool': 'windows_ui', 'action': 'find_element'},
+    'wait for element': {'tool': 'windows_ui', 'action': 'wait_for_element'},
+    'read element text': {'tool': 'windows_ui', 'action': 'read_element_text'},
+    'focused element': {'tool': 'windows_ui', 'action': 'get_focused_element'},
+    'list shares': {'tool': 'share_discovery', 'action': 'list_mappings'},
+    'inspect share': {'tool': 'share_discovery', 'action': 'inspect_share'},
+    'find share': {'tool': 'share_discovery', 'action': 'discover_targets'},
+    'recent documents': {'tool': 'document_intelligence', 'action': 'recent_documents'},
+    'extract text': {'tool': 'document_intelligence', 'action': 'extract_text'},
+    'inspect document': {'tool': 'document_intelligence', 'action': 'inspect_document'},
+    'search document content': {'tool': 'document_intelligence', 'action': 'search_content'},
+    'open document': {'tool': 'office', 'action': 'open_document'},
+    'export pdf': {'tool': 'office', 'action': 'export_pdf'},
+    'save as': {'tool': 'office', 'action': 'save_as_document'},
+    'list workbook sheets': {'tool': 'office', 'action': 'list_workbook_sheets'},
+    'draft email': {'tool': 'office', 'action': 'draft_email_with_attachment'},
+    'active document path': {'tool': 'office', 'action': 'reveal_active_document_path'},
     'move': {'tool': 'filesystem', 'action': 'move'},
     'organize downloads': {'tool': 'filesystem', 'action': 'organize_downloads'},
     'organize desktop': {'tool': 'filesystem', 'action': 'organize_desktop'},
@@ -103,6 +138,10 @@ TOOL_KEYWORDS = {
 # Priority by tool importance (lower number = higher priority)
 TOOL_PRIORITY = {
     'desktop': 5,
+    'windows_ui': 4,
+    'share_discovery': 6,
+    'document_intelligence': 7,
+    'office': 7,
     'driver_manager': 6,
     'os': 8,
     'software_inventory': 9,
@@ -136,6 +175,11 @@ class PlannerAgent:
         for part in parts:
             part = part.strip()
             if not part:
+                continue
+            special_task = self._infer_open_or_launch_task(part, idx)
+            if special_task is not None:
+                tasks.append(special_task)
+                idx += 1
                 continue
             # try to match multi-word keys first
             found = False
@@ -255,6 +299,18 @@ class PlannerAgent:
             m = re.search(r"(https?://\S+)", part)
             if m:
                 params['url'] = m.group(1)
+        if action == 'open_app':
+            app_name = part.replace(kw, '', 1).strip().strip("'\"")
+            if app_name:
+                params['app_name'] = app_name
+        if action in {'open_path', 'open_file'}:
+            path = self._extract_path(part)
+            if path:
+                params['path'] = path
+        if action == 'wait_for_window':
+            title = part.replace(kw, '', 1).strip().strip("'\"")
+            if title:
+                params['title'] = title
         if action == 'search':
             m = re.search(r"search\s+(?P<query>.+?)\s+(?:on|in)\s+(?P<url>https?://\S+)", part)
             if m:
@@ -291,6 +347,14 @@ class PlannerAgent:
             title = part.replace(kw, '', 1).strip().strip("'\"")
             if title:
                 params['title'] = title
+        if action == 'close_window':
+            title = part.replace(kw, '', 1).strip().strip("'\"")
+            if title:
+                params['title'] = title
+        if action == 'kill_process':
+            process_name = part.replace(kw, '', 1).strip().strip("'\"")
+            if process_name:
+                params['process_name'] = process_name
         if action == 'notify':
             message = part.replace(kw, '', 1).strip().strip("'\"")
             if message:
@@ -301,6 +365,42 @@ class PlannerAgent:
             service_name = re.sub(r'^(start|stop|restart)\s+service\s+', '', part).strip().strip("'\"")
             if service_name:
                 params['service_name'] = service_name
+        if action in {'inspect_window', 'list_elements', 'find_element', 'wait_for_element', 'read_element_text'}:
+            title = part.replace(kw, '', 1).strip().strip("'\"")
+            if title:
+                params['title'] = title
+        if action == 'inspect_share':
+            path = self._extract_path(part)
+            if path:
+                params['path'] = path
+        if action == 'discover_targets':
+            query = part.replace(kw, '', 1).strip().strip("'\"")
+            if query:
+                params['query'] = query
+        if action in {'inspect_document', 'extract_text', 'open_document', 'export_pdf', 'list_workbook_sheets'}:
+            path = self._extract_path(part)
+            if path:
+                params['path'] = path
+        if action == 'search_content':
+            path = self._extract_path(part)
+            if path:
+                params['root'] = path
+            query = part.replace(kw, '', 1).replace(path or '', '', 1).strip().strip("'\"")
+            if query:
+                params['query'] = query
+        if action == 'save_as_document':
+            matches = re.search(r"save as\s+(?P<source>[A-Za-z]:[\\/][^\n]+?)\s+to\s+(?P<dest>[A-Za-z]:[\\/][^\n]+)", part)
+            if matches:
+                params['path'] = matches.group('source').strip()
+                params['output_path'] = matches.group('dest').strip()
+        if action == 'draft_email_with_attachment':
+            attachment = self._extract_path(part)
+            if attachment:
+                params['attachment_path'] = attachment
+        if action == 'reveal_active_document_path':
+            app_name = part.replace(kw, '', 1).strip().strip("'\"")
+            if app_name:
+                params['app_name'] = app_name
         if action in {'find_executable', 'find_install_location', 'find_uninstaller', 'search_installed', 'find_driver_candidates', 'device_status', 'printer_status', 'printer_driver_info'}:
             query = part.replace(kw, '', 1).strip().strip("'\"")
             if query:
@@ -341,6 +441,9 @@ class PlannerAgent:
         return params
 
     def _extract_path(self, text: str) -> Optional[str]:
+        unc_match = re.search(r"(\\\\[^\s,;]+(?:\\[^\s,;]+)*)", text)
+        if unc_match:
+            return unc_match.group(1).strip().strip("'\"")
         path_match = re.search(r"([A-Za-z]:[\\/][^,\n]+)", text)
         if path_match:
             return path_match.group(1).strip().strip("'\"")
@@ -348,6 +451,56 @@ class PlannerAgent:
         if quoted_match:
             return quoted_match.group('path').strip()
         return None
+
+    def _infer_open_or_launch_task(self, part: str, idx: int) -> Optional[Task]:
+        prefixes = ("open ", "launch ", "start ")
+        prefix = next((item for item in prefixes if part.startswith(item)), None)
+        if not prefix:
+            return None
+
+        if part.startswith("start service") or part.startswith("restart service") or part.startswith("stop service"):
+            return None
+
+        target = part[len(prefix):].strip().strip("'\"")
+        if not target:
+            return None
+
+        if re.search(r"https?://\S+", target):
+            return Task(
+                id=f"task-{idx}-{uuid.uuid4().hex[:6]}",
+                tool="browser",
+                action="open_page",
+                params={"url": re.search(r"(https?://\S+)", target).group(1)},
+                priority=TOOL_PRIORITY.get("browser", 50),
+            )
+
+        path = self._extract_path(target)
+        if path:
+            action = "open_file" if re.search(r"\.[A-Za-z0-9]{1,6}$", path) else "open_path"
+            return Task(
+                id=f"task-{idx}-{uuid.uuid4().hex[:6]}",
+                tool="desktop",
+                action=action,
+                params={"path": path},
+                priority=TOOL_PRIORITY.get("desktop", 50),
+            )
+
+        if target.startswith("\\\\"):
+            return Task(
+                id=f"task-{idx}-{uuid.uuid4().hex[:6]}",
+                tool="desktop",
+                action="open_path",
+                params={"path": target},
+                priority=TOOL_PRIORITY.get("desktop", 50),
+            )
+
+        return Task(
+            id=f"task-{idx}-{uuid.uuid4().hex[:6]}",
+            tool="desktop",
+            action="open_app",
+            params={"app_name": target},
+            priority=TOOL_PRIORITY.get("desktop", 50),
+        )
 
     def _detect_dependencies(self, tasks: List[Task]) -> List[Task]:
         # Simple rule: if there's an install task for a package that will be used by a later task, make later depend on install.
@@ -390,6 +543,9 @@ class PlannerAgent:
                     errors.append(f"key required for task {t.id}")
             if t.tool == 'memory' and t.action == 'set' and not t.params.get('value'):
                 errors.append(f"value required for task {t.id}")
+            if t.tool == 'memory' and t.action == 'upsert_entity':
+                if not t.params.get('key') or not t.params.get('entity_type'):
+                    errors.append(f"key and entity_type required for task {t.id}")
             if t.tool == 'filesystem' and t.action in ('read', 'delete', 'mkdir', 'organize_directory', 'detect_duplicates', 'clean_temp', 'find_files', 'list', 'stat'):
                 if not t.params.get('path'):
                     errors.append(f"path required for task {t.id}")
@@ -416,6 +572,8 @@ class PlannerAgent:
                     errors.append(f"url required for task {t.id}")
                 if t.action == 'search' and (not t.params.get('query') or not t.params.get('base_url') or not t.params.get('query_selector')):
                     errors.append(f"search requires query, base_url and query_selector for task {t.id}")
+                if t.action == 'bridge_native_dialog' and not (t.params.get('title') or t.params.get('process_name')):
+                    errors.append(f"title or process_name required for task {t.id}")
             if t.tool == 'web':
                 if t.action == 'search_web' and not t.params.get('query'):
                     errors.append(f"query required for task {t.id}")
@@ -442,15 +600,42 @@ class PlannerAgent:
                 if t.action in {'device_status', 'find_driver_candidates', 'printer_status', 'printer_driver_info'} and not t.params.get('query'):
                     errors.append(f"query required for task {t.id}")
             if t.tool == 'desktop':
+                if t.action in {'open_path', 'open_file'} and not t.params.get('path'):
+                    errors.append(f"path required for task {t.id}")
+                if t.action == 'open_app' and not (t.params.get('app_name') or t.params.get('app_path')):
+                    errors.append(f"app_name or app_path required for task {t.id}")
+                if t.action == 'wait_for_window' and not (t.params.get('title') or t.params.get('process_name') or t.params.get('hwnd')):
+                    errors.append(f"title, process_name or hwnd required for task {t.id}")
                 if t.action == 'clipboard_set' and not t.params.get('text'):
                     errors.append(f"text required for task {t.id}")
-                if t.action == 'focus_window' and not t.params.get('title'):
-                    errors.append(f"title required for task {t.id}")
+                if t.action in {'focus_window', 'close_window'} and not (t.params.get('title') or t.params.get('hwnd')):
+                    errors.append(f"title or hwnd required for task {t.id}")
+                if t.action == 'kill_process' and not (t.params.get('pid') or t.params.get('process_name') or t.params.get('title')):
+                    errors.append(f"pid, process_name or title required for task {t.id}")
                 if t.action == 'notify' and not t.params.get('message'):
                     errors.append(f"message required for task {t.id}")
                 if t.action == 'service_action':
                     if not t.params.get('service_name') or not t.params.get('service_action'):
                         errors.append(f"service_action requires service_name and service_action for task {t.id}")
+            if t.tool == 'windows_ui':
+                if t.action in {'inspect_window', 'list_elements', 'find_element', 'wait_for_element', 'read_element_text'} and not (
+                    t.params.get('title') or t.params.get('process_name') or t.params.get('hwnd')
+                ):
+                    errors.append(f"title, process_name or hwnd required for task {t.id}")
+            if t.tool == 'share_discovery' and t.action == 'inspect_share' and not t.params.get('path'):
+                errors.append(f"path required for task {t.id}")
+            if t.tool == 'document_intelligence':
+                if t.action in {'inspect_document', 'extract_text'} and not t.params.get('path'):
+                    errors.append(f"path required for task {t.id}")
+                if t.action == 'search_content' and (not t.params.get('root') or not t.params.get('query')):
+                    errors.append(f"root and query required for task {t.id}")
+            if t.tool == 'office':
+                if t.action in {'open_document', 'export_pdf', 'list_workbook_sheets'} and not t.params.get('path'):
+                    errors.append(f"path required for task {t.id}")
+                if t.action == 'save_as_document' and (not t.params.get('path') or not t.params.get('output_path')):
+                    errors.append(f"path and output_path required for task {t.id}")
+                if t.action == 'reveal_active_document_path' and not t.params.get('app_name'):
+                    errors.append(f"app_name required for task {t.id}")
         if not plan.tasks:
             errors.append("no supported tasks parsed from input")
         if errors:

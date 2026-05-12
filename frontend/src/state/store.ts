@@ -24,6 +24,8 @@ export type RuntimeApproval = {
   reason?: string
   status: string
   risk?: any
+  details?: any
+  approval_mode?: string
 }
 export type RuntimeHandoffOption = {
   id: string
@@ -62,6 +64,7 @@ export type RunRecord = {
   events: RuntimeEvent[]
   recovery?: any
   error?: string | null
+  technical_error?: string | null
   reflection?: any
 }
 export type ProviderSetting = {
@@ -88,6 +91,7 @@ interface StoreState {
   connected: boolean
   messages: Message[]
   activeView: ViewMode
+  showAdvanced: boolean
   currentRunId: string | null
   runs: Record<string, RunRecord>
   providers: ProviderSetting[]
@@ -98,7 +102,9 @@ interface StoreState {
   setConnected: (value: boolean) => void
   addMessage: (message: Message) => void
   setActiveView: (view: ViewMode) => void
+  setShowAdvanced: (value: boolean) => void
   setCurrentRun: (requestId: string | null) => void
+  startNewChat: () => void
   setProviderSettings: (providers: ProviderSetting[]) => void
   setSupportedTools: (tools: SupportedToolDefinition[]) => void
   upsertProviderSetting: (provider: ProviderSetting) => void
@@ -106,6 +112,8 @@ interface StoreState {
   selectProvider: (provider: string | null) => void
   selectModel: (model: string) => void
   hydrateRun: (runState: any) => void
+  setRunsFromList: (runStates: any[]) => void
+  removeRun: (requestId: string) => void
   applyEvent: (event: RuntimeEvent) => void
 }
 
@@ -178,6 +186,7 @@ export const useStore = create<StoreState>((set, get) => ({
   connected: false,
   messages: [],
   activeView: 'dashboard',
+  showAdvanced: false,
   currentRunId: null,
   runs: {},
   providers: [],
@@ -188,7 +197,9 @@ export const useStore = create<StoreState>((set, get) => ({
   setConnected: value => set({ connected: value }),
   addMessage: message => set(state => ({ messages: [...state.messages, message] })),
   setActiveView: view => set({ activeView: view }),
+  setShowAdvanced: value => set({ showAdvanced: value }),
   setCurrentRun: requestId => set({ currentRunId: requestId }),
+  startNewChat: () => set({ currentRunId: null, messages: [] }),
   setProviderSettings: providers =>
     set(state => {
       const selectedProvider =
@@ -223,6 +234,28 @@ export const useStore = create<StoreState>((set, get) => ({
       selectedModel: resolveModel(state.providers, provider, ''),
     })),
   selectModel: model => set({ selectedModel: model }),
+  setRunsFromList: runStates =>
+    set(state => {
+      const runs = { ...state.runs }
+      for (const runState of runStates ?? []) {
+        const requestId = runState.request_id
+        if (!requestId) continue
+        const merged = ensureRun(runs, requestId, {
+          ...runState,
+          events: runState.history ?? runState.events ?? [],
+          tasks: runState.tasks ?? [],
+          approvals: runState.approvals ?? [],
+          handoffs: runState.handoffs ?? [],
+          pending_handoff: runState.pending_handoff ?? null,
+          recovery: runState.recovery ?? null,
+          reflection: runState.outputs?.final_reflection ?? runState.reflection ?? null,
+          error: runState.outputs?.final_reflection?.summary ?? runState.error ?? null,
+          technical_error: runState.error ?? null,
+        })
+        Object.assign(runs, merged)
+      }
+      return { runs }
+    }),
   hydrateRun: runState =>
     set(state => {
       const requestId = runState.request_id
@@ -234,10 +267,22 @@ export const useStore = create<StoreState>((set, get) => ({
         handoffs: runState.handoffs ?? [],
         pending_handoff: runState.pending_handoff ?? null,
         recovery: runState.recovery ?? null,
+        reflection: runState.outputs?.final_reflection ?? runState.reflection ?? null,
+        error: runState.outputs?.final_reflection?.summary ?? runState.error ?? null,
+        technical_error: runState.error ?? null,
       })
       return {
         currentRunId: requestId,
         runs,
+      }
+    }),
+  removeRun: requestId =>
+    set(state => {
+      const runs = { ...state.runs }
+      delete runs[requestId]
+      return {
+        runs,
+        currentRunId: state.currentRunId === requestId ? null : state.currentRunId,
       }
     }),
   applyEvent: event =>
@@ -372,7 +417,7 @@ export const useStore = create<StoreState>((set, get) => ({
               task.id === event.payload.task_id
                 ? {
                     ...task,
-                    status: 'completed',
+                    status: event.payload.status ?? 'completed',
                     result: event.payload.result,
                     reflection: event.payload.reflection,
                   }
@@ -401,6 +446,7 @@ export const useStore = create<StoreState>((set, get) => ({
             ...nextRun,
             status: 'failed',
             error: event.payload.error,
+            technical_error: event.payload.error,
             recovery: event.payload.reflection?.recommended_action ?? nextRun.recovery,
             tasks: nextRun.tasks.map(task =>
               task.id === event.payload.task_id
@@ -439,9 +485,19 @@ export const useStore = create<StoreState>((set, get) => ({
           nextRun = {
             ...nextRun,
             status: event.payload.status ?? 'failed',
-            error: event.payload.error,
+            error: event.payload.user_message ?? event.payload.reflection?.summary ?? event.payload.error,
+            technical_error: event.payload.error,
+            reflection: event.payload.reflection ?? nextRun.reflection,
           }
           break
+        case 'run_deleted': {
+          const runs = { ...state.runs }
+          delete runs[requestId]
+          return {
+            runs,
+            currentRunId: state.currentRunId === requestId ? null : state.currentRunId,
+          }
+        }
         default:
           break
       }

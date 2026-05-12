@@ -112,10 +112,37 @@ class FileSystemAgent:
         return {'request_id': request_id, 'removed': removed}
 
     async def find_files(self, root: Path, pattern: str) -> List[str]:
-        res = []
-        for p in root.rglob(pattern):
-            if p.is_file():
-                res.append(str(p))
+        normalized = (pattern or "*").strip()
+        res: List[str] = []
+        seen = set()
+        use_glob = any(token in normalized for token in ("*", "?", "[", "]"))
+
+        def _append(candidate: Path) -> None:
+            candidate_str = str(candidate)
+            if candidate_str in seen:
+                return
+            seen.add(candidate_str)
+            res.append(candidate_str)
+
+        if use_glob:
+            for p in root.rglob(normalized):
+                if p.is_file():
+                    _append(p)
+                if len(res) >= 200:
+                    break
+            return res
+
+        lowered_pattern = normalized.lower()
+        for p in root.rglob("*"):
+            try:
+                if not p.is_file():
+                    continue
+                if lowered_pattern in p.name.lower():
+                    _append(p)
+            except Exception:
+                logger.exception("find_files failed for %s", p)
+            if len(res) >= 200:
+                break
         return res
 
     async def create_structure(self, root: Path, template: Dict[str, Any]) -> Dict[str, Any]:

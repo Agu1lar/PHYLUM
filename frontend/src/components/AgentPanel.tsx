@@ -1,4 +1,5 @@
 ﻿import React from 'react'
+import { getApiBase } from '../lib/runtimeConfig'
 import { useStore } from '../state/store'
 
 const AgentPanel: React.FC = () => {
@@ -6,7 +7,7 @@ const AgentPanel: React.FC = () => {
   const supportedTools = useStore(state => state.supportedTools)
   const tasks = currentRun?.tasks ?? []
   const completed = tasks.filter(task => task.status === 'completed').length
-  const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://127.0.0.1:8000'
+  const API_BASE = getApiBase()
   const isCancelable = currentRun ? !['completed', 'failed', 'cancelled'].includes(currentRun.status) : false
   const executionMode = currentRun?.reflection?.details?.execution_mode ?? currentRun?.outputs?.execution_mode ?? currentRun?.runtime_mode ?? 'agentic'
 
@@ -20,7 +21,7 @@ const AgentPanel: React.FC = () => {
   }
 
   return (
-    <div className="rounded border border-gray-700 bg-gray-800 p-4">
+    <div className="h-full overflow-auto rounded border border-gray-700 bg-gray-800 p-4">
       <div className="mb-2 flex items-center justify-between gap-3">
         <h2 className="text-lg font-semibold">Execution Summary</h2>
         <button
@@ -77,13 +78,18 @@ const AgentPanel: React.FC = () => {
               <div className="mt-1 font-medium">{currentRun.handoffs?.length ?? 0}</div>
             </div>
           </div>
-          {currentRun.error ? (
-            <div className="rounded border border-red-900 bg-red-950/40 p-3 text-red-200">{currentRun.error}</div>
-          ) : null}
+          {currentRun.error ? <div className="rounded border border-red-900 bg-red-950/40 p-3 text-red-200">{currentRun.error}</div> : null}
           {currentRun.reflection ? (
             <div className="rounded bg-gray-900 p-3">
               <div className="text-xs uppercase text-gray-500">Final Reflection</div>
               <div className="mt-1">{currentRun.reflection.summary ?? currentRun.reflection.verdict}</div>
+              {currentRun.reflection.details?.next_steps?.length ? (
+                <ul className="mt-2 list-disc pl-5 text-xs text-gray-400">
+                  {currentRun.reflection.details.next_steps.map((step: string, index: number) => (
+                    <li key={`${index}-${step}`}>{step}</li>
+                  ))}
+                </ul>
+              ) : null}
             </div>
           ) : null}
           <div className="rounded bg-gray-900 p-3">

@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
+from action_models import ActionEffects, ActionIssue, ActionResult
 from shell_executor import ShellExecutor
 from tool_base import BaseTool
 
@@ -21,15 +22,9 @@ class DriverInput(BaseModel):
     printer_name: Optional[str] = None
 
 
-class DriverOutput(BaseModel):
-    success: bool
-    message: Optional[str] = None
-    details: Optional[Dict[str, Any]] = None
-
-
 class DriverManagerTool(BaseTool):
     InputModel = DriverInput
-    OutputModel = DriverOutput
+    OutputModel = ActionResult
 
     def __init__(self, *, default_timeout: int = 120, default_retries: int = 1):
         super().__init__(default_timeout=default_timeout, default_retries=default_retries)
@@ -41,7 +36,7 @@ class DriverManagerTool(BaseTool):
         if payload.action in {"install_inf", "add_driver_package"} and not payload.path:
             raise ValueError("path is required")
 
-    async def _run(self, payload: DriverInput, cancel_event=None) -> DriverOutput:
+    async def _run(self, payload: DriverInput, cancel_event=None) -> ActionResult:
         if payload.action == "list_devices":
             cmd = "Get-PnpDevice | Select-Object Class, FriendlyName, InstanceId, Status | ConvertTo-Json -Depth 3"
             shell = "powershell"
@@ -64,7 +59,16 @@ class DriverManagerTool(BaseTool):
                 f"https://www.google.com/search?q={query.replace(' ', '+')}+official+driver+download",
                 f"https://support.microsoft.com/search/results?query={query.replace(' ', '%20')}",
             ]
-            return DriverOutput(success=True, message="find_driver_candidates", details={"query": query, "candidates": urls})
+            return ActionResult(
+                status="succeeded",
+                summary=f"Encontrei {len(urls)} fontes candidatas para buscar drivers." if urls else "Nao encontrei fontes candidatas.",
+                tool="driver_manager",
+                action=payload.action,
+                semantic_type="inspection",
+                target={"query": query} if query else {},
+                data={"query": query, "candidates": urls},
+                effects=ActionEffects(changed=False),
+            )
         elif payload.action == "install_inf":
             cmd = f'pnputil /add-driver "{payload.path}" /install'
             shell = "cmd"
@@ -87,18 +91,24 @@ class DriverManagerTool(BaseTool):
             require_admin = True
         elif payload.action == "printer_status":
             query = payload.printer_name or payload.query or ""
-            cmd = (
-                f"Get-Printer | Where-Object {{$_.Name -like '*{query}*'}} "
-                "| Select-Object Name, DriverName, PrinterStatus, PortName | ConvertTo-Json -Depth 3"
-            )
+            if query:
+                cmd = (
+                    f"Get-Printer | Where-Object {{$_.Name -like '*{query}*'}} "
+                    "| Select-Object Name, DriverName, PrinterStatus, PortName | ConvertTo-Json -Depth 3"
+                )
+            else:
+                cmd = "Get-Printer | Select-Object Name, DriverName, PrinterStatus, PortName | ConvertTo-Json -Depth 3"
             shell = "powershell"
             require_admin = False
         elif payload.action == "printer_driver_info":
             query = payload.printer_name or payload.query or ""
-            cmd = (
-                f"Get-PrinterDriver | Where-Object {{$_.Name -like '*{query}*'}} "
-                "| Select-Object Name, MajorVersion, DriverPath, InfPath | ConvertTo-Json -Depth 3"
-            )
+            if query:
+                cmd = (
+                    f"Get-PrinterDriver | Where-Object {{$_.Name -like '*{query}*'}} "
+                    "| Select-Object Name, MajorVersion, DriverPath, InfPath | ConvertTo-Json -Depth 3"
+                )
+            else:
+                cmd = "Get-PrinterDriver | Select-Object Name, MajorVersion, DriverPath, InfPath | ConvertTo-Json -Depth 3"
             shell = "powershell"
             require_admin = False
         elif payload.action == "restart_spooler":
@@ -123,12 +133,105 @@ class DriverManagerTool(BaseTool):
                 parsed = json.loads(stdout)
             except Exception:
                 parsed = None
-        return DriverOutput(
-            success=resp.ok,
-            message=payload.action,
-            details={
-                "stdout": stdout,
-                "stderr": resp.result.stderr if resp.result else None,
-                "parsed": parsed,
-            },
+        diagnostics = {
+            "command": cmd,
+            "stdout": stdout,
+            "stderr": resp.result.stderr if resp.result else None,
+            "error": resp.error,
+            "cancelled": resp.cancelled,
+            "raw": resp.raw,
+        }
+        raw_exception_message = None
+        if isinstance(resp.raw, dict):
+            raw_exception_message = (
+                resp.raw.get("exception_message")
+                or resp.raw.get("exception_repr")
+                or resp.raw.get("exception_type")
+            )
+        target = {
+            key: value
+            for key, value in {
+                "query": payload.query,
+                "device_id": payload.device_id,
+                "path": payload.path,
+                "printer_name": payload.printer_name,
+            }.items()
+            if value is not None
+        }
+        if resp.ok:
+            if payload.action == "printer_status":
+                printers = parsed if isinstance(parsed, list) else ([parsed] if isinstance(parsed, dict) else [])
+                summary = (
+                    f"Encontrei {len(printers)} impressora(s) visivel(is) no sistema."
+                    if printers
+                    else "Nao encontrei impressoras correspondentes no sistema neste momento."
+                )
+                return ActionResult(
+                    status="succeeded",
+                    summary=summary,
+                    tool="driver_manager",
+                    action=payload.action,
+                    semantic_type="inspection",
+                    target=target,
+                    data={"printers": printers, "raw_stdout": stdout},
+                    effects=ActionEffects(changed=False),
+                    diagnostics=diagnostics,
+                )
+            if payload.action == "printer_driver_info":
+                drivers = parsed if isinstance(parsed, list) else ([parsed] if isinstance(parsed, dict) else [])
+                return ActionResult(
+                    status="succeeded",
+                    summary=f"Consultei {len(drivers)} driver(s) de impressora." if drivers else "Nao encontrei drivers de impressora correspondentes.",
+                    tool="driver_manager",
+                    action=payload.action,
+                    semantic_type="inspection",
+                    target=target,
+                    data={"drivers": drivers, "raw_stdout": stdout},
+                    effects=ActionEffects(changed=False),
+                    diagnostics=diagnostics,
+                )
+            if payload.action in {"list_devices", "device_status", "list_drivers"}:
+                items = parsed if isinstance(parsed, list) else ([parsed] if isinstance(parsed, dict) else [])
+                label = "dispositivo(s)" if payload.action != "list_drivers" else "driver(s)"
+                return ActionResult(
+                    status="succeeded",
+                    summary=f"Consultei {len(items)} {label}.",
+                    tool="driver_manager",
+                    action=payload.action,
+                    semantic_type="inspection",
+                    target=target,
+                    data={"items": items, "raw_stdout": stdout},
+                    effects=ActionEffects(changed=False),
+                    diagnostics=diagnostics,
+                )
+            return ActionResult(
+                status="succeeded",
+                summary=f"A acao {payload.action} foi executada com sucesso.",
+                tool="driver_manager",
+                action=payload.action,
+                semantic_type="mutation",
+                target=target,
+                data={"parsed": parsed, "raw_stdout": stdout},
+                effects=ActionEffects(changed=True),
+                diagnostics=diagnostics,
+            )
+
+        issue = ActionIssue(
+            kind="command_failed",
+            code=resp.error,
+            message=resp.error or diagnostics["stderr"] or raw_exception_message or f"A acao {payload.action} falhou.",
+            retryable=resp.error == "timeout",
+            details=diagnostics,
+        )
+        return ActionResult(
+            status="failed",
+            summary=issue.message,
+            tool="driver_manager",
+            action=payload.action,
+            semantic_type="mutation" if payload.action in {"install_inf", "add_driver_package", "rollback_driver", "scan_hardware_changes", "restart_spooler"} else "inspection",
+            target=target,
+            data={"parsed": parsed} if parsed is not None else {},
+            effects=ActionEffects(changed=False),
+            issue=issue,
+            diagnostics=diagnostics,
         )

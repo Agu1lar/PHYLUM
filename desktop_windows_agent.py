@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import json
 import logging
+import os
+import shutil
+import subprocess
 import threading
+import time
 from ctypes import wintypes
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import psutil
 
-from desktop_windows_models import ServiceInfo, WindowInfo
+from desktop_windows_models import ExplorerWindowInfo, ServiceInfo, WindowInfo
 from os_inspect_wmi import WmiWrapper
 
 logger = logging.getLogger(__name__)
@@ -19,11 +25,116 @@ kernel32 = ctypes.windll.kernel32 if hasattr(ctypes, "windll") else None
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
 SW_RESTORE = 9
+WM_CLOSE = 0x0010
+
+APP_ALIASES = {
+    "word": ["WINWORD.EXE"],
+    "microsoft word": ["WINWORD.EXE"],
+    "excel": ["EXCEL.EXE"],
+    "microsoft excel": ["EXCEL.EXE"],
+    "powerpoint": ["POWERPNT.EXE"],
+    "microsoft powerpoint": ["POWERPNT.EXE"],
+    "outlook": ["OUTLOOK.EXE"],
+    "onenote": ["ONENOTE.EXE"],
+    "explorer": ["explorer.exe"],
+    "file explorer": ["explorer.exe"],
+    "notepad": ["notepad.exe"],
+    "paint": ["mspaint.exe"],
+    "calculator": ["calc.exe"],
+    "calc": ["calc.exe"],
+    "powershell": ["powershell.exe", "pwsh.exe"],
+    "command prompt": ["cmd.exe"],
+    "cmd": ["cmd.exe"],
+}
 
 
 def _require_windows() -> None:
     if user32 is None or kernel32 is None:
         raise RuntimeError("desktop tool is only available on Windows")
+
+
+def _common_executable_roots() -> List[Path]:
+    roots = [
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")),
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")),
+        Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData/Local"))),
+        Path.home() / "AppData" / "Roaming",
+    ]
+    return [root for root in roots if root.exists()]
+
+
+def _candidate_executables(app_name: str) -> List[str]:
+    normalized = (app_name or "").strip()
+    if not normalized:
+        return []
+    lowered = normalized.lower()
+    candidates = list(APP_ALIASES.get(lowered, []))
+    if normalized.lower().endswith(".exe"):
+        candidates.append(normalized)
+    else:
+        candidates.extend([normalized, f"{normalized}.exe", normalized.replace(" ", "") + ".exe"])
+    seen = set()
+    unique_candidates: List[str] = []
+    for item in candidates:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_candidates.append(item)
+    return unique_candidates
+
+
+def _app_paths_registry_candidates(executable_name: str) -> List[str]:
+    paths: List[str] = []
+    try:
+        import winreg
+    except Exception:
+        return paths
+
+    registry_roots = [
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths"),
+    ]
+    for root, subkey in registry_roots:
+        try:
+            with winreg.OpenKey(root, f"{subkey}\\{executable_name}") as key:
+                value, _ = winreg.QueryValueEx(key, "")
+                if value:
+                    paths.append(str(value))
+        except OSError:
+            continue
+    return paths
+
+
+def _resolve_app_launch_target(app_name: str, app_path: Optional[str] = None) -> str:
+    if app_path:
+        candidate_path = Path(app_path)
+        if candidate_path.exists():
+            return str(candidate_path)
+        raise FileNotFoundError(f"application path not found: {app_path}")
+
+    if not app_name:
+        raise ValueError("app_name is required")
+
+    for candidate in _candidate_executables(app_name):
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+
+        for registry_path in _app_paths_registry_candidates(candidate):
+            if Path(registry_path).exists():
+                return registry_path
+
+    exact_targets = [item.lower() for item in _candidate_executables(app_name) if item.lower().endswith(".exe")]
+    for root in _common_executable_roots():
+        try:
+            for executable in root.rglob("*.exe"):
+                if executable.name.lower() in exact_targets:
+                    return str(executable)
+        except Exception:
+            logger.exception("failed to scan executable root %s", root)
+
+    raise FileNotFoundError(f"could not resolve an executable for '{app_name}'")
 
 
 def _enum_windows() -> List[WindowInfo]:
@@ -79,6 +190,28 @@ def _focus_window(hwnd: Optional[int] = None, title: Optional[str] = None) -> Wi
     if not user32.SetForegroundWindow(selected.hwnd):
         logger.warning("SetForegroundWindow returned false for hwnd=%s", selected.hwnd)
     return selected
+
+
+def _find_windows(
+    *,
+    hwnd: Optional[int] = None,
+    title: Optional[str] = None,
+    process_name: Optional[str] = None,
+) -> List[WindowInfo]:
+    windows = _enum_windows()
+    if hwnd is not None:
+        return [item for item in windows if item.hwnd == hwnd]
+    if title:
+        lowered_title = title.lower()
+        windows = [item for item in windows if lowered_title in item.title.lower()]
+    if process_name:
+        lowered_process = process_name.lower()
+        windows = [
+            item
+            for item in windows
+            if item.process_name and lowered_process in item.process_name.lower()
+        ]
+    return windows
 
 
 def _clipboard_get() -> str:
@@ -154,6 +287,163 @@ def _list_services() -> List[ServiceInfo]:
     return services
 
 
+def _list_explorer_windows() -> List[ExplorerWindowInfo]:
+    _require_windows()
+    ps_script = r"""
+$shell = New-Object -ComObject Shell.Application
+$result = @()
+foreach ($window in $shell.Windows()) {
+    try {
+        $fullName = [string]$window.FullName
+        $locationName = [string]$window.LocationName
+        $locationUrl = [string]$window.LocationURL
+        $path = $null
+        $selected = @()
+        try { $path = [string]$window.Document.Folder.Self.Path } catch {}
+        try { $selected = @($window.Document.SelectedItems() | ForEach-Object { $_.Path }) } catch {}
+        if (-not $path -and -not $locationUrl) { continue }
+        $result += [pscustomobject]@{
+            hwnd = [int64]$window.HWND
+            title = $locationName
+            process_name = if ($fullName) { [System.IO.Path]::GetFileName($fullName) } else { "explorer.exe" }
+            visible = $true
+            location_path = $path
+            location_url = $locationUrl
+            executable_path = $fullName
+            selected_items = $selected
+        }
+    } catch {}
+}
+$result | ConvertTo-Json -Depth 4 -Compress
+"""
+    completed = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or "failed to enumerate explorer windows")
+    stdout = (completed.stdout or "").strip()
+    if not stdout:
+        return []
+    payload = json.loads(stdout)
+    items = payload if isinstance(payload, list) else [payload]
+    return [ExplorerWindowInfo(**item) for item in items]
+
+
+def _list_mapped_drives() -> List[Dict[str, Any]]:
+    ps_script = r"""
+$drives = Get-PSDrive -PSProvider FileSystem | Select-Object Name, Root, CurrentLocation, Description, DisplayRoot, Used, Free
+$drives | ConvertTo-Json -Depth 4 -Compress
+"""
+    completed = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or "failed to enumerate mapped drives")
+    stdout = (completed.stdout or "").strip()
+    if not stdout:
+        return []
+    payload = json.loads(stdout)
+    items = payload if isinstance(payload, list) else [payload]
+    return items
+
+
+def _open_path(path: str) -> Dict[str, Any]:
+    target = Path(path)
+    if not target.exists() and not path.startswith("\\\\"):
+        raise FileNotFoundError(f"path not found: {path}")
+    os.startfile(path)
+    return {"path": path, "opened": True}
+
+
+def _start_process_via_powershell(target: str, arguments: Optional[List[str]] = None) -> Dict[str, Any]:
+    target_literal = json.dumps(target)
+    args_literal = json.dumps(arguments or [])
+    ps_script = f"""
+$target = {target_literal}
+$arguments = {args_literal} | ConvertFrom-Json
+$process = if ($arguments.Count -gt 0) {{
+    Start-Process -FilePath $target -ArgumentList $arguments -PassThru
+}} else {{
+    Start-Process -FilePath $target -PassThru
+}}
+[pscustomobject]@{{
+    pid = $process.Id
+    process_name = $process.ProcessName
+    path = $process.Path
+}} | ConvertTo-Json -Depth 4 -Compress
+"""
+    completed = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or f"failed to start process for {target}")
+    stdout = (completed.stdout or "").strip()
+    if not stdout:
+        return {"pid": None, "process_name": None, "path": target}
+    return json.loads(stdout)
+
+
+def _close_window(hwnd: Optional[int] = None, title: Optional[str] = None) -> WindowInfo:
+    _require_windows()
+    matches = _find_windows(hwnd=hwnd, title=title)
+    if not matches:
+        raise ValueError("window not found")
+    selected = matches[0]
+    user32.PostMessageW(selected.hwnd, WM_CLOSE, 0, 0)
+    return selected
+
+
+def _kill_process(
+    *,
+    pid: Optional[int] = None,
+    process_name: Optional[str] = None,
+    title: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    targets: List[psutil.Process] = []
+    if pid is not None:
+        targets = [psutil.Process(pid)]
+    elif title:
+        windows = _find_windows(title=title)
+        pids = [item.pid for item in windows if item.pid]
+        targets = [psutil.Process(item_pid) for item_pid in pids]
+    elif process_name:
+        lowered = process_name.lower()
+        for proc in psutil.process_iter(["pid", "name"]):
+            try:
+                name = (proc.info.get("name") or "").lower()
+                if lowered in name:
+                    targets.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+    else:
+        raise ValueError("pid, process_name or title is required")
+
+    killed: List[Dict[str, Any]] = []
+    seen_pids = set()
+    for proc in targets:
+        try:
+            if proc.pid in seen_pids:
+                continue
+            seen_pids.add(proc.pid)
+            info = {"pid": proc.pid, "name": proc.name()}
+            proc.terminate()
+            killed.append(info)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    if not killed:
+        raise ValueError("no matching process found")
+    return killed
+
+
 class DesktopWindowsAgent:
     def __init__(self):
         self.wmi = WmiWrapper()
@@ -182,9 +472,81 @@ class DesktopWindowsAgent:
         windows = await asyncio.to_thread(_enum_windows)
         return {"windows": [item.dict() for item in windows]}
 
+    async def list_explorer_windows(self) -> Dict[str, Any]:
+        windows = await asyncio.to_thread(_list_explorer_windows)
+        return {"windows": [item.dict() for item in windows]}
+
+    async def list_mapped_drives(self) -> Dict[str, Any]:
+        drives = await asyncio.to_thread(_list_mapped_drives)
+        return {"drives": drives}
+
+    async def get_explorer_selection(self) -> Dict[str, Any]:
+        windows = await asyncio.to_thread(_list_explorer_windows)
+        return {
+            "windows": [
+                {
+                    "hwnd": item.hwnd,
+                    "title": item.title,
+                    "location_path": item.location_path,
+                    "selected_items": list(item.selected_items),
+                }
+                for item in windows
+            ]
+        }
+
+    async def open_app(
+        self,
+        *,
+        app_name: Optional[str] = None,
+        app_path: Optional[str] = None,
+        arguments: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        target = await asyncio.to_thread(_resolve_app_launch_target, app_name or "", app_path)
+        result = await asyncio.to_thread(_start_process_via_powershell, target, arguments)
+        result["target"] = target
+        if app_name:
+            result["app_name"] = app_name
+        return result
+
+    async def open_path(self, path: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(_open_path, path)
+
+    async def open_file(self, path: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(_open_path, path)
+
+    async def wait_for_window(
+        self,
+        *,
+        title: Optional[str] = None,
+        process_name: Optional[str] = None,
+        hwnd: Optional[int] = None,
+        timeout_seconds: int = 15,
+    ) -> Dict[str, Any]:
+        deadline = time.monotonic() + max(timeout_seconds, 1)
+        while time.monotonic() < deadline:
+            matches = await asyncio.to_thread(_find_windows, hwnd=hwnd, title=title, process_name=process_name)
+            if matches:
+                return {"window": matches[0].dict(), "matched": True}
+            await asyncio.sleep(0.4)
+        raise TimeoutError("window did not appear before timeout")
+
     async def focus_window(self, *, hwnd: Optional[int] = None, title: Optional[str] = None) -> Dict[str, Any]:
         focused = await asyncio.to_thread(_focus_window, hwnd, title)
         return {"window": focused.dict()}
+
+    async def close_window(self, *, hwnd: Optional[int] = None, title: Optional[str] = None) -> Dict[str, Any]:
+        window = await asyncio.to_thread(_close_window, hwnd, title)
+        return {"window": window.dict()}
+
+    async def kill_process(
+        self,
+        *,
+        pid: Optional[int] = None,
+        process_name: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        killed = await asyncio.to_thread(_kill_process, pid=pid, process_name=process_name, title=title)
+        return {"processes": killed}
 
     async def clipboard_get(self) -> Dict[str, Any]:
         text = await asyncio.to_thread(_clipboard_get)

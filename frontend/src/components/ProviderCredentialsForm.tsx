@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react'
+import { getApiBase } from '../lib/runtimeConfig'
 import { ProviderSetting, useStore } from '../state/store'
 
 type Props = {
   provider: ProviderSetting
 }
 
-const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://127.0.0.1:8000'
+const API_BASE = getApiBase()
 
 const ProviderCredentialsForm: React.FC<Props> = ({ provider }) => {
   const upsertProviderSetting = useStore(state => state.upsertProviderSetting)

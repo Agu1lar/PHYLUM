@@ -3,6 +3,7 @@ import logging
 import subprocess
 import shlex
 import time
+import traceback
 from typing import Optional, Dict, Any, List
 
 from models import StructuredResponse, ExecutionMeta, CommandResult, ExecutionRisk
@@ -38,13 +39,16 @@ class ShellExecutor:
         start = time.time()
         proc = await asyncio.create_subprocess_exec(*cmd_list, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         pid = proc.pid
+        cancellation_requested = False
 
         # cancellation monitor
         async def _cancel_watcher():
+            nonlocal cancellation_requested
             if cancel_event is None:
                 return
             await cancel_event.wait()
             try:
+                cancellation_requested = True
                 logger.info("Cancellation requested - terminating pid %s", pid)
                 await self._terminate_process_tree(pid)
             except ProcessLookupError:
@@ -60,7 +64,7 @@ class ShellExecutor:
             stdout = stdout_bytes.decode(errors='ignore') if stdout_bytes else ''
             stderr = stderr_bytes.decode(errors='ignore') if stderr_bytes else ''
             logger.debug("Process %s exited with %s", pid, proc.returncode)
-            cancelled = bool(cancel_event and cancel_event.is_set())
+            cancelled = bool(cancellation_requested and proc.returncode not in {0, None})
             return {
                 "stdout": stdout,
                 "stderr": stderr,
@@ -170,7 +174,21 @@ class ShellExecutor:
                 )
             except Exception as exc:
                 logger.exception("Execution attempt %s failed: %s", attempt, exc)
-                last_err = StructuredResponse(ok=False, meta=meta, result=None, risk=ExecutionRisk(level=classification['level'], tags=classification['tags'], reason=classification['reason']), error=str(exc), cancelled=False)
+                error_message = str(exc).strip() or exc.__class__.__name__ or "shell-execution-error"
+                last_err = StructuredResponse(
+                    ok=False,
+                    meta=meta,
+                    result=None,
+                    risk=ExecutionRisk(level=classification['level'], tags=classification['tags'], reason=classification['reason']),
+                    error=error_message,
+                    cancelled=False,
+                    raw={
+                        "exception_type": exc.__class__.__name__,
+                        "exception_message": str(exc),
+                        "exception_repr": repr(exc),
+                        "traceback": traceback.format_exc(),
+                    },
+                )
                 await asyncio.sleep(min(2 ** attempt, 10))
 
         # all retries exhausted

@@ -1,9 +1,11 @@
 import logging
+import json
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
-from tool_base import BaseTool
-from tool_schemas import ToolResult
+
+from action_models import ActionEffects, ActionIssue, ActionResult
 from shell_executor import ShellExecutor
+from tool_base import BaseTool
 
 logger = logging.getLogger(__name__)
 
@@ -17,15 +19,9 @@ class PackageInput(BaseModel):
     require_admin: bool = Field(True)
 
 
-class PackageOutput(BaseModel):
-    success: bool
-    message: Optional[str] = None
-    details: Optional[Dict[str, Any]] = None
-
-
 class PackageManagerTool(BaseTool):
     InputModel = PackageInput
-    OutputModel = PackageOutput
+    OutputModel = ActionResult
 
     def __init__(self, *, default_timeout: int = 120, default_retries: int = 2):
         super().__init__(default_timeout=default_timeout, default_retries=default_retries)
@@ -37,7 +33,7 @@ class PackageManagerTool(BaseTool):
         if payload.action in ('install','uninstall', 'search', 'show', 'upgrade') and payload.action != 'list' and not payload.package:
             raise ValueError('package name required')
 
-    async def _run(self, payload: PackageInput, cancel_event=None) -> PackageOutput:
+    async def _run(self, payload: PackageInput, cancel_event=None) -> ActionResult:
         # build safe command
         if payload.manager == 'winget':
             source_args = f" --source {payload.source}" if payload.source else ""
@@ -107,6 +103,73 @@ class PackageManagerTool(BaseTool):
                 cancel_event=cancel_event,
             )
 
-        success = resp.ok
-        details = {'stdout': resp.result.stdout if resp.result else None, 'stderr': resp.result.stderr if resp.result else None}
-        return PackageOutput(success=success, message='done' if success else 'failed', details=details)
+        stdout = resp.result.stdout if resp.result else ""
+        stderr = resp.result.stderr if resp.result else ""
+        diagnostics = {
+            "command": cmd,
+            "stdout": stdout,
+            "stderr": stderr,
+            "error": resp.error,
+            "manager": payload.manager,
+        }
+        target = {"manager": payload.manager}
+        if payload.package:
+            target["package"] = payload.package
+
+        parsed_stdout = None
+        if payload.manager == "pip" and payload.action == "list" and stdout:
+            try:
+                parsed_stdout = json.loads(stdout)
+            except Exception:
+                parsed_stdout = None
+
+        if resp.ok:
+            if payload.action in {"list", "search", "show"}:
+                summary = f"Consulta ao gerenciador {payload.manager} concluida."
+                data: Dict[str, Any] = {"stdout": stdout}
+                if parsed_stdout is not None:
+                    data["packages"] = parsed_stdout
+                    summary = f"Listei {len(parsed_stdout)} pacote(s) com o gerenciador {payload.manager}."
+                return ActionResult(
+                    status="succeeded",
+                    summary=summary,
+                    tool="package_manager",
+                    action=payload.action,
+                    semantic_type="inspection",
+                    target=target,
+                    data=data,
+                    effects=ActionEffects(changed=False),
+                    diagnostics=diagnostics,
+                )
+
+            return ActionResult(
+                status="succeeded",
+                summary=f"A acao {payload.action} em {payload.package or payload.manager} foi concluida com sucesso.",
+                tool="package_manager",
+                action=payload.action,
+                semantic_type="mutation",
+                target=target,
+                data={"stdout": stdout},
+                effects=ActionEffects(changed=True),
+                diagnostics=diagnostics,
+            )
+
+        issue = ActionIssue(
+            kind="command_failed",
+            code=resp.error,
+            message=resp.error or stderr or f"A acao {payload.action} falhou no gerenciador {payload.manager}.",
+            retryable=resp.error == "timeout",
+            details=diagnostics,
+        )
+        return ActionResult(
+            status="failed",
+            summary=issue.message,
+            tool="package_manager",
+            action=payload.action,
+            semantic_type="mutation" if payload.action in {"install", "uninstall", "upgrade"} else "inspection",
+            target=target,
+            data={"stdout": stdout} if stdout else {},
+            effects=ActionEffects(changed=False),
+            issue=issue,
+            diagnostics=diagnostics,
+        )

@@ -42,6 +42,20 @@ class HandoffProviderClient:
         return AgentTurnResult(content="Continuando com a resposta do usuario.", tool_calls=[])
 
 
+class PrinterSetupProviderClient:
+    async def complete(self, **kwargs):
+        return AgentTurnResult(
+            content="Vou verificar a impressora para iniciar a configuracao.",
+            tool_calls=[
+                NormalizedToolCall(
+                    id="printer-1",
+                    name="driver_manager",
+                    arguments={"action": "printer_status"},
+                )
+            ],
+        )
+
+
 @pytest.mark.asyncio
 async def test_runtime_manager_agentic_pause_reply_resume(monkeypatch, isolated_persistence):
     secrets = {}
@@ -132,3 +146,54 @@ async def test_runtime_manager_rehydrates_pending_handoff(monkeypatch, isolated_
     assert any(item["request_id"] == request_id for item in recovered)
     assert recovered_state["status"] == "awaiting_input"
     assert recovered_state["pending_handoff"]["handoff_id"] == paused_state["pending_handoff"]["handoff_id"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_manager_pauses_for_printer_clarification_on_driver_failure(monkeypatch, isolated_persistence):
+    secrets = {}
+    store = CredentialStore(isolated_persistence)
+
+    monkeypatch.setattr(store, "_set_password", lambda provider, secret: secrets.__setitem__(provider, secret))
+    monkeypatch.setattr("credential_store.keyring.get_password", lambda service, provider: secrets.get(provider))
+    monkeypatch.setattr(store, "_delete_password", lambda provider: secrets.pop(provider, None))
+
+    await store.save_credential(
+        "openai",
+        CredentialPayload(api_key="sk-test-1234", default_model="gpt-4.1-mini"),
+    )
+
+    async def emitter(message):
+        return None
+
+    manager = RuntimeManager(emitter, credential_store=store, provider_client=PrinterSetupProviderClient())
+
+    async def failing_execute(_state):
+        return {
+            "tool": "driver_manager",
+            "action": "printer_status",
+            "task_id": "agentic-1-printer",
+            "tool_result": {
+                "success": False,
+                "message": "printer_status",
+                "details": {
+                    "error": "validation: provider unavailable",
+                    "stderr": "",
+                    "stdout": "",
+                    "parsed": None,
+                },
+            },
+        }
+
+    monkeypatch.setattr(manager.tool_router, "execute", failing_execute)
+
+    request_id = await manager.submit_run(
+        {"text": "configure minha impressora de rede"},
+        runtime_mode="agentic",
+        provider="openai",
+        model="gpt-4.1-mini",
+    )
+    paused_state = await manager.wait_for_run(request_id, timeout=10)
+
+    assert paused_state["status"] == "awaiting_input"
+    assert paused_state["pending_handoff"]["title"] == "Preciso identificar a impressora"
+    assert "nome exibido da impressora" in paused_state["pending_handoff"]["prompt"]

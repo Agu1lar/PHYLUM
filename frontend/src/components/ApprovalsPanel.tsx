@@ -1,4 +1,5 @@
 ﻿import React from 'react'
+import { getApiBase } from '../lib/runtimeConfig'
 import { useStore } from '../state/store'
 
 const ApprovalsPanel: React.FC = () => {
@@ -6,7 +7,7 @@ const ApprovalsPanel: React.FC = () => {
   const approvals = currentRun?.approvals ?? []
   const pendingApprovals = approvals.filter(approval => approval.status === 'pending')
 
-  const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://127.0.0.1:8000'
+  const API_BASE = getApiBase()
 
   async function postApproval(id: string, status: string) {
     try {
@@ -36,6 +37,8 @@ const ApprovalsPanel: React.FC = () => {
             <div>
               <div className="font-medium">{approval.title}</div>
               <div className="text-sm text-gray-400">{approval.reason || approval.task_id}</div>
+              {approval.details?.path ? <div className="text-xs text-gray-500">Path: {approval.details.path}</div> : null}
+              {approval.details?.dest ? <div className="text-xs text-gray-500">Destino: {approval.details.dest}</div> : null}
               <div className="text-xs text-gray-500">Status: {approval.status || 'pending'}</div>
             </div>
             <div>

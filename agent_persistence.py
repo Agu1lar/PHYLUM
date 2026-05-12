@@ -65,6 +65,15 @@ class Persistence:
             await db.execute('DELETE FROM kv WHERE k = ?', (k,))
             await db.commit()
 
+    async def delete_state(self, request_id: str):
+        await self.delete_kv(f"state:{request_id}")
+
+    async def delete_approvals(self, request_id: str):
+        await self._ensure()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('DELETE FROM approvals WHERE request_id = ?', (request_id,))
+            await db.commit()
+
     async def list_kv(self, prefix: Optional[str] = None) -> List[Dict[str, Any]]:
         await self._ensure()
         query = 'SELECT k, v, updated_at FROM kv'

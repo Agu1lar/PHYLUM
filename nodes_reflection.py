@@ -4,6 +4,19 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _first_meaningful_text(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                return text
+    return None
+
 class ReflectionNode(BaseNode):
     async def validate(self, state: Dict[str, Any]) -> bool:
         return True
@@ -24,25 +37,52 @@ class ReflectionNode(BaseNode):
 
         verdict = "success"
         details: Dict[str, Any] = {}
+        summary_text = None
         if isinstance(task_result, dict):
-            tool_result = task_result.get("tool_result", {})
-            if "structured" in tool_result:
-                structured = tool_result["structured"]
+            action_result = _as_dict(task_result.get("action_result"))
+            if action_result:
+                action_status = action_result.get("status", "failed")
+                verdict = "success" if action_status == "succeeded" else action_status
+                details = {
+                    "summary": action_result.get("summary"),
+                    "target": action_result.get("target"),
+                    "data": action_result.get("data"),
+                    "effects": action_result.get("effects"),
+                    "goal": action_result.get("goal"),
+                    "issue": action_result.get("issue"),
+                    "diagnostics": action_result.get("diagnostics"),
+                }
+                summary_text = action_result.get("summary")
+            tool_result = _as_dict(task_result.get("tool_result"))
+            if not action_result and "structured" in tool_result:
+                structured = _as_dict(tool_result.get("structured"))
+                command_result = _as_dict(structured.get("result"))
                 verdict = "success" if structured.get("ok") else "failed"
                 details = {
-                    "stdout": structured.get("result", {}).get("stdout"),
-                    "stderr": structured.get("result", {}).get("stderr"),
+                    "stdout": command_result.get("stdout"),
+                    "stderr": command_result.get("stderr"),
                     "risk": structured.get("risk"),
+                    "error": structured.get("error"),
                 }
-            elif "success" in tool_result:
+                if verdict != "success":
+                    summary_text = _first_meaningful_text(structured.get("error"), command_result.get("stderr"))
+            elif not action_result and "success" in tool_result:
                 verdict = "success" if tool_result.get("success") else "failed"
-                details = tool_result.get("details") or {}
-            elif "ok" in tool_result:
+                details = _as_dict(tool_result.get("details"))
+                if verdict != "success":
+                    summary_text = _first_meaningful_text(
+                        details.get("error"),
+                        details.get("stderr"),
+                        tool_result.get("message"),
+                    )
+            elif not action_result and "ok" in tool_result:
                 verdict = "success" if tool_result.get("ok") else "failed"
-                details = tool_result.get("details") or {}
+                details = _as_dict(tool_result.get("details"))
+                if verdict != "success":
+                    summary_text = _first_meaningful_text(details.get("error"), details.get("stderr"))
         summary = {
             "verdict": verdict,
-            "summary": f"Task {task.get('id') if task else 'unknown'} completed with verdict {verdict}",
+            "summary": summary_text or f"Task {task.get('id') if task else 'unknown'} completed with verdict {verdict}",
             "details": details,
             "recommended_action": None if verdict == "success" else ((task or {}).get("recovery") or {"action": "stop"}),
         }

@@ -10,3 +10,6 @@ keyring
 psutil
 WMI
 pywin32
+pywinauto
+pypdf
+extract-msg

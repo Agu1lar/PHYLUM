@@ -9,7 +9,7 @@ from keyring.errors import KeyringError, PasswordDeleteError
 from pydantic import BaseModel, Field
 
 from agent_persistence import Persistence
-from provider_registry import get_provider, list_provider_definitions
+from provider_registry import get_provider, list_provider_definitions, normalize_model
 
 
 def _now() -> str:
@@ -51,7 +51,7 @@ class CredentialStore:
                     configured=bool(metadata),
                     last4=metadata.get("last4") if metadata else None,
                     updated_at=metadata.get("updated_at") if metadata else None,
-                    default_model=(metadata or {}).get("default_model") or definition.default_model,
+                    default_model=normalize_model(definition.provider, (metadata or {}).get("default_model") or definition.default_model),
                     base_url=(metadata or {}).get("base_url") or definition.base_url,
                     requires_base_url=definition.requires_base_url,
                     models=definition.models,
@@ -69,7 +69,7 @@ class CredentialStore:
             "provider": definition.provider,
             "last4": secret[-4:] if len(secret) >= 4 else secret,
             "updated_at": _now(),
-            "default_model": payload.default_model or definition.default_model,
+            "default_model": normalize_model(definition.provider, payload.default_model or definition.default_model),
             "base_url": payload.base_url or definition.base_url,
         }
         await self.persistence.save_kv(self._metadata_key(definition.provider), metadata)
@@ -94,7 +94,10 @@ class CredentialStore:
         if not secret:
             raise ValueError(f"provider '{definition.provider}' is not configured")
         metadata = await self._get_metadata(definition.provider)
-        resolved_model = model or (metadata or {}).get("default_model") or definition.default_model
+        resolved_model = normalize_model(
+            definition.provider,
+            model or (metadata or {}).get("default_model") or definition.default_model,
+        )
         if not resolved_model:
             raise ValueError(f"provider '{definition.provider}' requires a model")
         return {
