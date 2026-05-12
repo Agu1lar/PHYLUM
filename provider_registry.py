@@ -22,12 +22,26 @@ PROVIDERS: Dict[str, ProviderDefinition] = {
         default_model="gpt-4.1-mini",
         base_url="https://api.openai.com/v1",
     ),
+    "gemini": ProviderDefinition(
+        provider="gemini",
+        display_name="Google Gemini",
+        models=["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+        default_model="gemini-2.5-flash",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+    ),
     "anthropic": ProviderDefinition(
         provider="anthropic",
         display_name="Anthropic",
         models=["claude-3-5-sonnet-latest", "claude-3-7-sonnet-latest"],
         default_model="claude-3-5-sonnet-latest",
         base_url="https://api.anthropic.com/v1",
+    ),
+    "openrouter": ProviderDefinition(
+        provider="openrouter",
+        display_name="OpenRouter",
+        models=["openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet", "google/gemini-2.0-flash-001"],
+        default_model="openai/gpt-4o-mini",
+        base_url="https://openrouter.ai/api/v1",
     ),
     "openai_compatible": ProviderDefinition(
         provider="openai_compatible",

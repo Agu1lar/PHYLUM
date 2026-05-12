@@ -136,6 +136,28 @@ class RuntimeManager:
         await self._set_run_status(state, "cancelling")
         await self._emit("run_cancellation_requested", {"request_id": request_id, "status": "cancelling"}, state=state)
 
+        task_to_cancel = None
+        current_task_id = state.get("current_task_id")
+        if current_task_id:
+            task_to_cancel = next((task for task in state.get("tasks", []) if task.get("id") == current_task_id), None)
+        if task_to_cancel is None:
+            task_to_cancel = next(
+                (
+                    task
+                    for task in state.get("tasks", [])
+                    if task.get("status") not in {"completed", "failed", "cancelled", "rejected"}
+                ),
+                None,
+            )
+        if task_to_cancel is not None and task_to_cancel.get("status") != "cancelled":
+            task_to_cancel["status"] = "cancelled"
+            task_to_cancel["error"] = task_to_cancel.get("error") or "cancelled"
+            await self._emit(
+                "task_cancelled",
+                {"request_id": request_id, "task_id": task_to_cancel["id"], "error": "cancelled"},
+                state=state,
+            )
+
         for approval_id, run_id in list(self.approval_run_map.items()):
             if run_id != request_id:
                 continue
@@ -500,18 +522,27 @@ class RuntimeManager:
 
     async def _mark_run_cancelled(self, state: Dict[str, Any]) -> None:
         current_task_id = state.get("current_task_id")
+        task_to_cancel = None
         if current_task_id:
-            for task in state["tasks"]:
-                if task["id"] == current_task_id and task.get("status") not in {"completed", "failed", "cancelled"}:
-                    task["status"] = "cancelled"
-                    if not task.get("error"):
-                        task["error"] = "cancelled"
-                    await self._emit(
-                        "task_cancelled",
-                        {"request_id": state["request_id"], "task_id": task["id"], "error": "cancelled"},
-                        state=state,
-                    )
-                    break
+            task_to_cancel = next((task for task in state["tasks"] if task["id"] == current_task_id), None)
+        if task_to_cancel is None:
+            task_to_cancel = next(
+                (
+                    task
+                    for task in state["tasks"]
+                    if task.get("status") not in {"completed", "failed", "cancelled", "rejected"}
+                ),
+                None,
+            )
+        if task_to_cancel is not None and task_to_cancel.get("status") != "cancelled":
+            task_to_cancel["status"] = "cancelled"
+            if not task_to_cancel.get("error"):
+                task_to_cancel["error"] = "cancelled"
+            await self._emit(
+                "task_cancelled",
+                {"request_id": state["request_id"], "task_id": task_to_cancel["id"], "error": "cancelled"},
+                state=state,
+            )
         state["error"] = "cancelled"
         await self._set_run_status(state, "cancelled")
         await self._emit(

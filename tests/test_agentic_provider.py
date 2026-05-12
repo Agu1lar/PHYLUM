@@ -5,6 +5,7 @@ import pytest
 from agent_persistence import Persistence
 from credential_store import CredentialPayload, CredentialStore
 from multi_provider_client import AgentTurnResult, NormalizedToolCall
+from provider_registry import get_provider
 from runtime_manager import RuntimeManager
 
 
@@ -36,6 +37,11 @@ async def test_credential_store_returns_metadata_only(monkeypatch, isolated_pers
     assert "api_key" not in settings
     assert resolved["api_key"] == "sk-secret-1234"
     assert resolved["model"] == "gpt-4.1-mini"
+
+
+def test_provider_registry_supports_gemini_and_openrouter():
+    assert get_provider("gemini").display_name == "Google Gemini"
+    assert get_provider("openrouter").display_name == "OpenRouter"
 
 
 class FakeProviderClient:
