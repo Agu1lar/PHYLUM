@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 from typing import Tuple, List
 
@@ -32,11 +33,19 @@ async def prepare_elevated_command(command: str, shell: str = 'powershell') -> T
             return (['pwsh', '-NoProfile', '-NonInteractive', '-Command', command], False)
         return (['/bin/sh', '-c', command], False)
 
-    # Use powershell Start-Process -Verb RunAs to trigger elevation
-    # Construct single-quoted command escaping single quotes
-    safe_command = command.replace("'", "''")
-    ps_cmd = f"Start-Process -FilePath '{'powershell.exe' if shell=='powershell' else 'cmd.exe'}' -ArgumentList '-NoProfile','-NonInteractive','-Command','{safe_command}' -Verb RunAs"
-    # Run via powershell exe
+    executable = 'powershell.exe' if shell == 'powershell' else 'cmd.exe'
+    if shell == 'powershell':
+        encoded = base64.b64encode(command.encode('utf-16-le')).decode('ascii')
+        argument_list = f"'-NoProfile','-NonInteractive','-EncodedCommand','{encoded}'"
+    else:
+        safe_command = command.replace("'", "''")
+        argument_list = f"'/C','{safe_command}'"
+    ps_cmd = (
+        f"$process = Start-Process -FilePath '{executable}' "
+        f"-ArgumentList {argument_list} -Verb RunAs -Wait -PassThru; "
+        f"if ($null -eq $process) {{ exit 1 }}; "
+        f"exit $process.ExitCode"
+    )
     return (['powershell', '-NoProfile', '-NonInteractive', '-Command', ps_cmd], True)
 
 

@@ -527,10 +527,21 @@ class RuntimeManager:
             await self._emit("task_planned", {"request_id": state["request_id"], "task": task}, state=state)
             await self._execute_task_with_recovery(state, task)
 
+        status_counts: Dict[str, int] = {}
+        for task in state["tasks"]:
+            status_counts[task["status"]] = status_counts.get(task["status"], 0) + 1
+        if set(status_counts.keys()) == {"completed"}:
+            summary = f"Completed {len(state['tasks'])} task(s)"
+        else:
+            summary = "Finished local execution with mixed task outcomes."
         await self._complete_run(
             state,
-            summary=f"Completed {len(state['tasks'])} task(s)",
-            details={"completed_tasks": [task["id"] for task in state["tasks"]], "execution_mode": "local_heuristic"},
+            summary=summary,
+            details={
+                "completed_tasks": [task["id"] for task in state["tasks"] if task.get("status") == "completed"],
+                "task_status_counts": status_counts,
+                "execution_mode": "local_heuristic",
+            },
             current_node="reflection",
         )
 
@@ -589,14 +600,17 @@ class RuntimeManager:
         task = self._current_failure_task(state)
         recovery = (task or {}).get("recovery") or state.get("recovery") or {"action": "stop"}
         tool_result = (((task or {}).get("result") or {}).get("tool_result") or {})
+        action_result = (((task or {}).get("result") or {}).get("action_result") or {})
         details = (tool_result.get("details") or {}) if isinstance(tool_result, dict) else {}
         params = (task or {}).get("params") or {}
         task_title = (task or {}).get("title") or "esta tarefa"
         raw_error = _first_non_empty(
-            error,
-            (task or {}).get("error"),
+            ((action_result.get("issue") or {}).get("message") if isinstance(action_result, dict) else None),
+            action_result.get("summary") if isinstance(action_result, dict) else None,
             details.get("error") if isinstance(details, dict) else None,
             details.get("stderr") if isinstance(details, dict) else None,
+            error,
+            (task or {}).get("error"),
         ) or "erro inesperado"
         message = raw_error.lower()
         tool = (task or {}).get("tool")
@@ -649,6 +663,16 @@ class RuntimeManager:
                 "A operacao demorou mais do que o esperado e foi interrompida."
             )
             next_steps = ["Tente novamente com mais contexto ou com um alvo mais especifico."]
+        elif tool == "desktop" and action == "open_app":
+            target = params.get("app_name") or params.get("app_path") or "o aplicativo solicitado"
+            summary = (
+                f"Nao consegui abrir {target}. "
+                "O aplicativo foi localizado, mas a etapa de inicializacao falhou antes que eu pudesse continuar."
+            )
+            next_steps = [
+                "Verifique se o aplicativo abre manualmente nesta sessao do Windows.",
+                "Se ele abrir com janela inicial, tente novamente para eu continuar com a automacao.",
+            ]
         else:
             summary = (
                 f"Nao consegui concluir '{task_title}'. "

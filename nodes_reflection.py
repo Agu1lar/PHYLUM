@@ -27,9 +27,17 @@ class ReflectionNode(BaseNode):
         task_error = state.get("current_task_error")
         if task_error:
             recovery = (task or {}).get("recovery") if task else None
+            task_result_dict = _as_dict(task_result)
+            action_result = _as_dict(task_result_dict.get("action_result"))
+            issue = _as_dict(action_result.get("issue"))
+            summary_text = _first_meaningful_text(
+                str(task_error),
+                issue.get("message"),
+                task_result_dict.get("message"),
+            )
             summary = {
                 "verdict": "failed",
-                "summary": f"Task {task.get('id') if task else 'unknown'} failed",
+                "summary": summary_text or f"Task {task.get('id') if task else 'unknown'} failed",
                 "details": {"error": str(task_error), "recovery": recovery},
                 "recommended_action": recovery or {"action": "stop"},
             }

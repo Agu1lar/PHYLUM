@@ -103,10 +103,20 @@ class WindowsAutonomyPlannerAndToolTests(unittest.IsolatedAsyncioTestCase):
 
         result = await tool.run({"action": "open_app", "app_name": "word"})
 
-        self.assertTrue(result.ok)
-        self.assertIn("Opened app", result.message)
-        self.assertEqual(result.details["pid"], 99)
+        self.assertEqual(result.status, "succeeded")
+        self.assertIn("Abri o app", result.summary)
+        self.assertEqual(result.data["pid"], 99)
         tool.agent.open_app.assert_awaited_once()
+
+    async def test_desktop_tool_open_app_preserves_not_found_error(self):
+        tool = DesktopTool()
+        tool.agent.open_app = AsyncMock(side_effect=FileNotFoundError("could not resolve an executable for 'word'"))
+
+        result = await tool.run({"action": "open_app", "app_name": "word"})
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.issue.kind, "app_not_found")
+        self.assertIn("could not resolve", result.summary)
 
 
 if __name__ == "__main__":

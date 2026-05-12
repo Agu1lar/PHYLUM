@@ -42,11 +42,13 @@ class BaseTool:
         retries: Optional[int] = None,
         cancel_event: Optional[asyncio.Event] = None,
     ) -> BaseModel:
-        # parse and validate
         timeout = timeout or self.default_timeout
         retries = retries if retries is not None else self.default_retries
-        input_model: BaseModel = self.InputModel(**payload)
-        await self.validate(input_model)
+        try:
+            input_model: BaseModel = self.InputModel(**payload)
+            await self.validate(input_model)
+        except Exception as exc:
+            raise ToolExecutionError(f"validation failed: {exc}") from exc
 
         last_exc = None
         for attempt in range(1, retries + 1):
@@ -71,4 +73,5 @@ class BaseTool:
                 self.logger.exception("Tool %s attempt %s failed: %s", self.__class__.__name__, attempt, exc)
                 last_exc = exc
                 await asyncio.sleep(min(2 ** attempt, 10))
-        raise ToolExecutionError(f"All {retries} attempts failed") from last_exc
+        root_message = str(last_exc).strip() if last_exc is not None else "unknown tool error"
+        raise ToolExecutionError(f"All {retries} attempts failed: {root_message}") from last_exc

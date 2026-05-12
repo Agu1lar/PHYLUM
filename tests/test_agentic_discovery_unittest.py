@@ -90,6 +90,22 @@ class AgenticDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["pid"], 4321)
         self.assertEqual(result["target"], r"C:\Program Files\Word\WINWORD.EXE")
 
+    def test_launch_helper_handles_empty_argument_list(self):
+        popen = type("PopenStub", (), {"pid": 4321})
+        process = type("ProcessStub", (), {"name": lambda self: "WINWORD.EXE"})()
+
+        with patch("desktop_windows_agent.subprocess.Popen", return_value=popen) as mocked_popen, patch(
+            "desktop_windows_agent.psutil.Process",
+            return_value=process,
+        ):
+            result = DesktopWindowsAgent()
+            launch = __import__("desktop_windows_agent")._start_process_via_powershell
+            payload = launch(r"C:\Program Files\Microsoft Office\Root\Office16\WINWORD.EXE", None)
+
+        mocked_popen.assert_called_once()
+        self.assertEqual(payload["pid"], 4321)
+        self.assertEqual(payload["process_name"], "WINWORD.EXE")
+
 
 if __name__ == "__main__":
     unittest.main()

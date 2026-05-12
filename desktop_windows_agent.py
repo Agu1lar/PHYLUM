@@ -362,34 +362,18 @@ def _open_path(path: str) -> Dict[str, Any]:
 
 
 def _start_process_via_powershell(target: str, arguments: Optional[List[str]] = None) -> Dict[str, Any]:
-    target_literal = json.dumps(target)
-    args_literal = json.dumps(arguments or [])
-    ps_script = f"""
-$target = {target_literal}
-$arguments = {args_literal} | ConvertFrom-Json
-$process = if ($arguments.Count -gt 0) {{
-    Start-Process -FilePath $target -ArgumentList $arguments -PassThru
-}} else {{
-    Start-Process -FilePath $target -PassThru
-}}
-[pscustomobject]@{{
-    pid = $process.Id
-    process_name = $process.ProcessName
-    path = $process.Path
-}} | ConvertTo-Json -Depth 4 -Compress
-"""
-    completed = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(completed.stderr.strip() or f"failed to start process for {target}")
-    stdout = (completed.stdout or "").strip()
-    if not stdout:
-        return {"pid": None, "process_name": None, "path": target}
-    return json.loads(stdout)
+    cmd = [target, *(arguments or [])]
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    try:
+        proc = subprocess.Popen(cmd, creationflags=creationflags)
+    except OSError as exc:
+        raise RuntimeError(str(exc).strip() or f"failed to start process for {target}") from exc
+    process_name = None
+    try:
+        process_name = psutil.Process(proc.pid).name()
+    except Exception:
+        process_name = Path(target).name
+    return {"pid": proc.pid, "process_name": process_name, "path": target}
 
 
 def _close_window(hwnd: Optional[int] = None, title: Optional[str] = None) -> WindowInfo:

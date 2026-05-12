@@ -197,3 +197,42 @@ async def test_runtime_manager_cancels_running_task(monkeypatch, isolated_persis
     assert any(event["type"] == "run_cancellation_requested" for event in events)
     assert any(event["type"] == "task_cancelled" for event in events)
     assert any(event["type"] == "run_cancelled" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_runtime_manager_allows_partial_local_desktop_launch(monkeypatch, isolated_persistence):
+    events = []
+
+    async def emitter(message):
+        events.append(message)
+
+    manager = RuntimeManager(emitter)
+
+    async def partial_execute(_state):
+        return {
+            "tool": "desktop",
+            "action": "open_app",
+            "task_id": "task-1",
+            "tool_result": {"status": "succeeded", "summary": "Abri o app word.", "tool": "desktop", "action": "open_app", "data": {"pid": 101}},
+            "action_result": {
+                "status": "succeeded",
+                "summary": "Abri o app word.",
+                "tool": "desktop",
+                "action": "open_app",
+                "semantic_type": "execution",
+                "target": {"app_name": "word"},
+                "data": {"pid": 101},
+                "effects": {"changed": False, "predicted_effects": [], "artifacts": [], "before": None, "after": None, "rollback": {"available": False, "reference": None}},
+                "diagnostics": {},
+            },
+        }
+
+    monkeypatch.setattr(manager.tool_router, "execute", partial_execute)
+
+    request_id = await manager.submit_run({"text": "open word", "allow_local_execution": True}, runtime_mode="heuristic")
+    final_state = await manager.wait_for_run(request_id, timeout=10)
+
+    assert final_state["status"] == "completed"
+    assert final_state["tasks"][0]["status"] == "partial"
+    assert final_state["outputs"]["final_reflection"]["verdict"] == "success"
+    assert any(event["type"] == "task_finished" and event["payload"]["status"] == "partial" for event in events)

@@ -168,6 +168,22 @@ class ActionExecutor:
                     recovery=task.get("recovery"),
                     goal_verification=goal_verification,
                 )
+                task["status"] = self._task_status_for_action_status(action_status)
+                if action_status in {"partial", "needs_input", "blocked"}:
+                    state["error"] = None
+                    await self.runtime._emit(
+                        "task_finished",
+                        {
+                            "request_id": state["request_id"],
+                            "task_id": task["id"],
+                            "result": result,
+                            "reflection": task["reflection"],
+                            "attempt": task["attempt"],
+                            "status": task["status"],
+                        },
+                        state=state,
+                    )
+                    return result
                 if action_status != "succeeded":
                     raise RuntimeError(task["reflection"]["summary"])
 

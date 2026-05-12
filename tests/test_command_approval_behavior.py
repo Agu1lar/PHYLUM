@@ -32,6 +32,28 @@ class CommandApprovalBehaviorTests(unittest.TestCase):
 
         self.assertEqual(message, "O comando terminou com codigo de saida 1.")
 
+    def test_tool_registry_normalizes_tool_exception(self):
+        registry = ToolRegistry()
+
+        class BrokenTool:
+            async def run(self, *_args, **_kwargs):
+                raise FileNotFoundError("could not resolve an executable for 'word'")
+
+        registry.tools["desktop"] = BrokenTool()
+
+        async def _run():
+            return await registry.execute(
+                {"id": "task-1", "tool": "desktop", "action": "open_app", "params": {"app_name": "word"}}
+            )
+
+        import asyncio
+
+        result = asyncio.run(_run())
+
+        self.assertEqual(result["action_result"]["status"], "failed")
+        self.assertEqual(result["action_result"]["issue"]["kind"], "not_found")
+        self.assertIn("could not resolve", result["action_result"]["summary"])
+
 
 class AsyncCommandBehaviorTests(unittest.IsolatedAsyncioTestCase):
     async def test_shell_executor_keeps_exception_type_when_message_is_empty(self):

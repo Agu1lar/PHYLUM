@@ -1,8 +1,9 @@
 import logging
 from typing import Optional
 
+from action_models import ActionEffects, ActionIssue, ActionResult
 from desktop_windows_agent import DesktopWindowsAgent
-from desktop_windows_models import DesktopRequest, DesktopResponse
+from desktop_windows_models import DesktopRequest
 from tool_base import BaseTool
 
 logger = logging.getLogger(__name__)
@@ -10,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 class DesktopTool(BaseTool):
     InputModel = DesktopRequest
-    OutputModel = DesktopResponse
+    OutputModel = ActionResult
 
     def __init__(self, *, default_timeout: int = 30, default_retries: int = 1):
         super().__init__(default_timeout=default_timeout, default_retries=default_retries)
@@ -39,68 +40,168 @@ class DesktopTool(BaseTool):
             if not payload.service_name or not payload.service_action:
                 raise ValueError("service_action requires service_name and service_action")
 
-    async def _run(self, payload: DesktopRequest) -> DesktopResponse:
-        if payload.action == "list_processes":
-            details = await self.agent.list_processes()
-        elif payload.action == "list_windows":
-            details = await self.agent.list_windows()
-        elif payload.action == "list_explorer_windows":
-            details = await self.agent.list_explorer_windows()
-        elif payload.action == "list_mapped_drives":
-            details = await self.agent.list_mapped_drives()
-        elif payload.action == "get_explorer_selection":
-            details = await self.agent.get_explorer_selection()
-        elif payload.action == "open_app":
-            details = await self.agent.open_app(
-                app_name=payload.app_name,
-                app_path=payload.app_path,
-                arguments=payload.arguments,
+    async def _run(self, payload: DesktopRequest) -> ActionResult:
+        target = {
+            key: value
+            for key, value in {
+                "hwnd": payload.hwnd,
+                "title": payload.title,
+                "path": payload.path,
+                "app_name": payload.app_name,
+                "app_path": payload.app_path,
+                "process_name": payload.process_name,
+                "pid": payload.pid,
+                "service_name": payload.service_name,
+                "service_action": payload.service_action,
+            }.items()
+            if value is not None
+        }
+        semantic_type = "mutation" if payload.action in {"close_window", "kill_process", "clipboard_set", "notify", "service_action"} else "inspection"
+        if payload.action in {"open_app", "open_path", "open_file", "focus_window"}:
+            semantic_type = "execution"
+        changed = payload.action in {"close_window", "kill_process", "clipboard_set", "notify", "service_action"}
+        try:
+            if payload.action == "list_processes":
+                details = await self.agent.list_processes()
+                summary = "Listei os processos em execucao."
+            elif payload.action == "list_windows":
+                details = await self.agent.list_windows()
+                summary = "Listei as janelas abertas."
+            elif payload.action == "list_explorer_windows":
+                details = await self.agent.list_explorer_windows()
+                summary = "Listei as janelas do Explorer."
+            elif payload.action == "list_mapped_drives":
+                details = await self.agent.list_mapped_drives()
+                summary = "Listei os drives mapeados."
+            elif payload.action == "get_explorer_selection":
+                details = await self.agent.get_explorer_selection()
+                summary = "Capturei a selecao atual do Explorer."
+            elif payload.action == "open_app":
+                details = await self.agent.open_app(
+                    app_name=payload.app_name,
+                    app_path=payload.app_path,
+                    arguments=payload.arguments,
+                )
+                summary = f"Abri o app {payload.app_name or payload.app_path}."
+            elif payload.action == "open_path":
+                details = await self.agent.open_path(payload.path or "")
+                summary = f"Abri o caminho {payload.path}."
+            elif payload.action == "open_file":
+                details = await self.agent.open_file(payload.path or "")
+                summary = f"Abri o arquivo {payload.path}."
+            elif payload.action == "wait_for_window":
+                details = await self.agent.wait_for_window(
+                    hwnd=payload.hwnd,
+                    title=payload.title,
+                    process_name=payload.process_name,
+                    timeout_seconds=payload.timeout_seconds or 15,
+                )
+                summary = "Detectei a janela solicitada."
+            elif payload.action == "focus_window":
+                details = await self.agent.focus_window(hwnd=payload.hwnd, title=payload.title)
+                summary = "Coloquei a janela em foco."
+            elif payload.action == "close_window":
+                details = await self.agent.close_window(hwnd=payload.hwnd, title=payload.title)
+                summary = "Solicitei o fechamento da janela."
+            elif payload.action == "kill_process":
+                details = await self.agent.kill_process(pid=payload.pid, process_name=payload.process_name, title=payload.title)
+                summary = "Solicitei a finalizacao do processo."
+            elif payload.action == "clipboard_get":
+                details = await self.agent.clipboard_get()
+                summary = "Li o texto atual da area de transferencia."
+            elif payload.action == "clipboard_set":
+                details = await self.agent.clipboard_set(payload.text or "")
+                summary = "Atualizei a area de transferencia."
+            elif payload.action == "notify":
+                details = await self.agent.notify(payload.message or "", title=payload.title or "Agente Desktop")
+                summary = "Enviei a notificacao."
+            elif payload.action == "list_services":
+                details = await self.agent.list_services()
+                summary = "Listei os servicos do Windows."
+            elif payload.action == "service_action":
+                details = await self.agent.service_action(payload.service_name or "", payload.service_action or "")
+                summary = f"Executei a acao {payload.service_action} no servico {payload.service_name}."
+            else:
+                return ActionResult(
+                    status="failed",
+                    summary=f"A acao {payload.action} nao e suportada.",
+                    tool="desktop",
+                    action=payload.action,
+                    semantic_type=semantic_type,
+                    target=target,
+                    data={},
+                    effects=ActionEffects(changed=False),
+                    issue=ActionIssue(kind="unsupported_action", message=f"Unsupported desktop action: {payload.action}"),
+                )
+            return ActionResult(
+                status="succeeded",
+                summary=summary,
+                tool="desktop",
+                action=payload.action,
+                semantic_type=semantic_type,
+                target=target,
+                data=details,
+                effects=ActionEffects(changed=changed),
             )
-        elif payload.action == "open_path":
-            details = await self.agent.open_path(payload.path or "")
-        elif payload.action == "open_file":
-            details = await self.agent.open_file(payload.path or "")
-        elif payload.action == "wait_for_window":
-            details = await self.agent.wait_for_window(
-                hwnd=payload.hwnd,
-                title=payload.title,
-                process_name=payload.process_name,
-                timeout_seconds=payload.timeout_seconds or 15,
+        except FileNotFoundError as exc:
+            issue_kind = "app_not_found" if payload.action == "open_app" else "path_not_found"
+            return ActionResult(
+                status="failed",
+                summary=str(exc),
+                tool="desktop",
+                action=payload.action,
+                semantic_type=semantic_type,
+                target=target,
+                data={},
+                effects=ActionEffects(changed=False),
+                issue=ActionIssue(kind=issue_kind, message=str(exc), retryable=False),
+                diagnostics={"exception_type": exc.__class__.__name__},
             )
-        elif payload.action == "focus_window":
-            details = await self.agent.focus_window(hwnd=payload.hwnd, title=payload.title)
-        elif payload.action == "close_window":
-            details = await self.agent.close_window(hwnd=payload.hwnd, title=payload.title)
-        elif payload.action == "kill_process":
-            details = await self.agent.kill_process(pid=payload.pid, process_name=payload.process_name, title=payload.title)
-        elif payload.action == "clipboard_get":
-            details = await self.agent.clipboard_get()
-        elif payload.action == "clipboard_set":
-            details = await self.agent.clipboard_set(payload.text or "")
-        elif payload.action == "notify":
-            details = await self.agent.notify(payload.message or "", title=payload.title or "Agente Desktop")
-        elif payload.action == "list_services":
-            details = await self.agent.list_services()
-        elif payload.action == "service_action":
-            details = await self.agent.service_action(payload.service_name or "", payload.service_action or "")
-        else:
-            raise ValueError(f"unsupported desktop action: {payload.action}")
-        if payload.action == "open_app":
-            message = f"Opened app {payload.app_name or payload.app_path}"
-        elif payload.action in {"open_path", "open_file"}:
-            message = f"Opened {payload.path}"
-        elif payload.action == "wait_for_window":
-            message = "Window detected"
-        elif payload.action == "list_mapped_drives":
-            message = "Mapped drives listed"
-        elif payload.action == "get_explorer_selection":
-            message = "Explorer selection captured"
-        elif payload.action == "list_explorer_windows":
-            message = "Explorer windows listed"
-        elif payload.action == "close_window":
-            message = "Window close requested"
-        elif payload.action == "kill_process":
-            message = "Process termination requested"
-        else:
-            message = payload.action
-        return DesktopResponse(ok=True, message=message, details=details)
+        except TimeoutError as exc:
+            return ActionResult(
+                status="failed",
+                summary=str(exc),
+                tool="desktop",
+                action=payload.action,
+                semantic_type=semantic_type,
+                target=target,
+                data={},
+                effects=ActionEffects(changed=False),
+                issue=ActionIssue(kind="timeout", message=str(exc), retryable=True),
+                diagnostics={"exception_type": exc.__class__.__name__},
+            )
+        except ValueError as exc:
+            message = str(exc)
+            lowered = message.lower()
+            if "window not found" in lowered:
+                issue_kind = "window_not_found"
+            elif "process" in lowered and "not found" in lowered:
+                issue_kind = "process_not_found"
+            else:
+                issue_kind = "validation"
+            return ActionResult(
+                status="failed",
+                summary=message,
+                tool="desktop",
+                action=payload.action,
+                semantic_type=semantic_type,
+                target=target,
+                data={},
+                effects=ActionEffects(changed=False),
+                issue=ActionIssue(kind=issue_kind, message=message, retryable=False),
+                diagnostics={"exception_type": exc.__class__.__name__},
+            )
+        except Exception as exc:
+            logger.exception("Desktop action failed")
+            return ActionResult(
+                status="failed",
+                summary=str(exc),
+                tool="desktop",
+                action=payload.action,
+                semantic_type=semantic_type,
+                target=target,
+                data={},
+                effects=ActionEffects(changed=False),
+                issue=ActionIssue(kind="tool_internal", message=str(exc), retryable=False),
+                diagnostics={"exception_type": exc.__class__.__name__},
+            )

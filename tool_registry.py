@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import traceback
 from typing import Any, Dict
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from action_models import ActionEffects, ActionIssue, ActionResult
 from canonical_tools import action_metadata, supported_tools
@@ -72,14 +73,23 @@ class ToolRegistry:
         tool_name = task["tool"]
         tool = self.tools[tool_name]
         payload = self.build_payload(task)
-        raw_result = await tool.run(payload, cancel_event=cancel_event)
-        raw_payload = _jsonable(raw_result)
-        action_result = self.normalize_result(
-            tool_name=tool_name,
-            action=task["action"],
-            params=task.get("params", {}),
-            raw_result=raw_payload,
-        )
+        try:
+            raw_result = await tool.run(payload, cancel_event=cancel_event)
+            raw_payload = _jsonable(raw_result)
+            action_result = self.normalize_result(
+                tool_name=tool_name,
+                action=task["action"],
+                params=task.get("params", {}),
+                raw_result=raw_payload,
+            )
+        except Exception as exc:
+            raw_payload = self._exception_payload(exc)
+            action_result = self._action_result_from_exception(
+                tool_name=tool_name,
+                action=task["action"],
+                params=task.get("params", {}),
+                exc=exc,
+            )
         return {
             "tool": tool_name,
             "action": task["action"],
@@ -186,6 +196,52 @@ class ToolRegistry:
             return f"O comando terminou com codigo de saida {return_code}."
         return "O comando nao foi concluido com sucesso."
 
+    def _root_exception(self, exc: Exception) -> Exception:
+        root = exc
+        seen = set()
+        while root not in seen and getattr(root, "__cause__", None) is not None:
+            seen.add(root)
+            root = root.__cause__
+        return root
+
+    def _exception_payload(self, exc: Exception) -> Dict[str, Any]:
+        root = self._root_exception(exc)
+        return {
+            "success": False,
+            "message": str(root).strip() or str(exc).strip() or exc.__class__.__name__,
+            "details": {
+                "error": str(root).strip() or root.__class__.__name__,
+                "exception_type": root.__class__.__name__,
+                "exception_repr": repr(root),
+                "traceback": traceback.format_exc(),
+            },
+        }
+
+    def _action_result_from_exception(self, *, tool_name: str, action: str, params: Dict[str, Any], exc: Exception) -> Dict[str, Any]:
+        metadata = action_metadata(tool_name, action)
+        target = self._target_from_params(params, metadata)
+        root = self._root_exception(exc)
+        message = str(root).strip() or str(exc).strip() or root.__class__.__name__
+        issue_kind = self._issue_kind_for_exception(root)
+        return ActionResult(
+            status="failed",
+            summary=message,
+            tool=tool_name,
+            action=action,
+            semantic_type=metadata.get("semantic_type", "inspection"),
+            target=target,
+            data={},
+            effects=ActionEffects(changed=False),
+            issue=ActionIssue(
+                kind=issue_kind,
+                code=root.__class__.__name__,
+                message=message,
+                retryable=issue_kind in {"timeout", "tool_internal"},
+                details={"exception_type": root.__class__.__name__},
+            ),
+            diagnostics={"exception_type": root.__class__.__name__},
+        ).dict()
+
     def _target_from_params(self, params: Dict[str, Any], metadata: Dict[str, Any]) -> Dict[str, Any]:
         target: Dict[str, Any] = {}
         for field in metadata.get("target_fields") or []:
@@ -205,3 +261,14 @@ class ToolRegistry:
         if "validation" in text:
             return "validation"
         return "tool_failed"
+
+    def _issue_kind_for_exception(self, exc: Exception) -> str:
+        if isinstance(exc, ValidationError):
+            return "validation"
+        if isinstance(exc, FileNotFoundError):
+            return "not_found"
+        if isinstance(exc, TimeoutError):
+            return "timeout"
+        if isinstance(exc, ValueError):
+            return "validation"
+        return "tool_internal"
