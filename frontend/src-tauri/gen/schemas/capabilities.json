@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Default desktop capabilities for Agente Desktop.","local":true,"windows":["main","approval-widget"],"permissions":["core:default",{"identifier":"shell:allow-execute","allow":[{"name":"binaries/agente-backend","sidecar":true}]}]}}
