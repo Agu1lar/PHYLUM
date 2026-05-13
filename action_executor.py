@@ -267,6 +267,10 @@ class ActionExecutor:
                     )
                     await asyncio.sleep(min(2 ** int(task["attempt"]), 5))
                     continue
+                if task["recovery"].get("classification") == "script_recovery" and task["recovery"].get("script"):
+                    script_result = await self._execute_script_recovery(state, task, task["recovery"]["script"])
+                    if script_result is not None:
+                        return script_result
                 state["error"] = str(exc)
                 await self.runtime._emit(
                     "task_failed",
@@ -275,6 +279,84 @@ class ActionExecutor:
                 )
                 await self.runtime._fail_run(state, str(exc))
                 raise
+
+    async def _execute_script_recovery(self, state: Dict[str, Any], task: Dict[str, Any], script: Dict[str, Any]) -> Any:
+        """Execute a script-based recovery when the primary tool path failed."""
+        import uuid as _uuid
+        recovery_task = {
+            "id": f"recovery-{_uuid.uuid4().hex[:8]}",
+            "title": f"Script recovery for {task.get('title', task['id'])}",
+            "tool": script["tool"],
+            "action": script["action"],
+            "params": script.get("params", {}),
+            "intent": task.get("intent", {}),
+            "policy_metadata": {},
+            "depends_on": [],
+            "status": "pending",
+            "attempt": 0,
+            "max_attempts": 1,
+            "recovery": None,
+            "requires_approval": False,
+            "approval_granted": False,
+            "approval_id": None,
+            "approval_grant_id": None,
+            "approval_scope": None,
+            "pause_context": None,
+            "result": None,
+            "error": None,
+            "reflection": None,
+            "is_script_recovery": True,
+            "original_task_id": task["id"],
+        }
+        await self.runtime._emit(
+            "script_recovery_started",
+            {
+                "request_id": state["request_id"],
+                "original_task_id": task["id"],
+                "recovery_task_id": recovery_task["id"],
+                "script_tool": script["tool"],
+                "script_action": script["action"],
+            },
+            state=state,
+        )
+        try:
+            recovery_task["attempt"] = 1
+            recovery_task["status"] = "running"
+            state["tasks"].append(recovery_task)
+            result = await self.runtime.tool_router.execute({
+                "inputs": state["inputs"],
+                "current_task": recovery_task,
+                "cancel_event": self.runtime._cancel_event_for(state["request_id"]),
+            })
+            action_result = result.get("action_result") or {}
+            action_status = action_result.get("status", "failed")
+            recovery_task["result"] = result
+            state["outputs"][recovery_task["id"]] = result
+
+            if action_status == "succeeded":
+                recovery_task["status"] = "completed"
+                task["status"] = "completed"
+                task["result"] = result
+                task["recovery"]["script_recovery_succeeded"] = True
+                state["error"] = None
+                await self.runtime._emit(
+                    "script_recovery_succeeded",
+                    {
+                        "request_id": state["request_id"],
+                        "original_task_id": task["id"],
+                        "recovery_task_id": recovery_task["id"],
+                        "result": result,
+                    },
+                    state=state,
+                )
+                await self.runtime._record_task_observation(
+                    state, task=recovery_task, result=result,
+                )
+                return result
+            recovery_task["status"] = "failed"
+        except Exception:
+            recovery_task["status"] = "failed"
+        return None
 
     def _is_agentic_task(self, state: Dict[str, Any], task: Dict[str, Any]) -> bool:
         return state.get("runtime_mode") == "agentic" and str(task.get("id", "")).startswith("agentic-")

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+from execution_strategy import ExecutionStrategy
 
 
 class RecoveryEngine:
+    def __init__(self):
+        self.execution_strategy = ExecutionStrategy()
     def classify_action_result(
         self,
         *,
@@ -87,6 +91,13 @@ class RecoveryEngine:
         retryable = issue_kind in {"timeout", "network", "tool_internal"} and attempt < max_attempts
         if not retryable and tool in {"shell", "browser", "web", "windows_ui"} and attempt < max_attempts:
             retryable = True
+        if not retryable:
+            script_recovery = self.execution_strategy.suggest_script_recovery(
+                task=task, error=summary, attempt=attempt,
+            )
+            if script_recovery:
+                script_recovery["recommended_followups"] = []
+                return script_recovery
         return {
             "classification": "retryable" if retryable else "terminal",
             "retryable": retryable,
@@ -163,6 +174,12 @@ class RecoveryEngine:
             }
         if not retryable and not issue_kind and tool in {"shell", "browser", "package_manager", "web", "windows_ui"} and attempt < max_attempts:
             retryable = True
+        if not retryable:
+            script_recovery = self.execution_strategy.suggest_script_recovery(
+                task=task, error=error, attempt=attempt,
+            )
+            if script_recovery:
+                return script_recovery
         return {
             "classification": "retryable" if retryable else "terminal",
             "retryable": retryable,

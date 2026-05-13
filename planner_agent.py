@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Tuple, Optional
 from pydantic import BaseModel
 
 from canonical_tools import supported_tools as canonical_supported_tools
-from planner_models import Task, Plan, ValidationResult
+from planner_models import Task, Plan, ValidationResult, GoalPhase, GoalDecomposition
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -668,6 +668,172 @@ class PlannerAgent:
             params={"app_name": target},
             priority=TOOL_PRIORITY.get("desktop", 50),
         )
+
+    COMPLEX_GOAL_PATTERNS = [
+        (r"\b(depois|then|apos|em seguida|e depois)\b", "sequential_multi_step"),
+        (r"\b(configurar?|setup|deploy|instalar? e configurar?)\b.*\b(completo|tudo|full|inteiro)\b", "full_setup"),
+        (r"\b(migrar?|migration|mover? tudo|transferir? tudo)\b", "migration"),
+        (r"\b(backup completo|full backup|rotina de backup)\b", "backup_routine"),
+        (r"\b(monitorar?|polling|loop|every \d+ minutes?|a cada \d+ minutos?)\b", "recurring"),
+        (r"\b(pipeline|workflow|fluxo completo|processo inteiro)\b", "pipeline"),
+        (r"\b(fase \d+|phase \d+|etapa \d+|step \d+ of \d+)\b", "explicit_phased"),
+    ]
+
+    def is_complex_goal(self, text: str) -> Optional[str]:
+        lowered = text.lower()
+        for pattern, goal_type in self.COMPLEX_GOAL_PATTERNS:
+            if re.search(pattern, lowered):
+                return goal_type
+        parts = re.split(r"\band\b|;|,|\bthen\b|\bdepois\b|\bem seguida\b", lowered)
+        actionable = [p.strip() for p in parts if p.strip() and len(p.strip()) > 5]
+        if len(actionable) >= 4:
+            return "multi_action"
+        return None
+
+    async def decompose_goal(self, text: str, *, workspace: str = "default") -> GoalDecomposition:
+        goal_type = self.is_complex_goal(text) or "simple"
+
+        plan, validation = await self.parse(text)
+
+        if len(plan.tasks) <= 2 and goal_type == "simple":
+            phase = GoalPhase(
+                phase_id="phase-0",
+                title="Execute tasks",
+                description=text,
+                tasks=plan.tasks,
+                priority=50,
+                estimated_complexity="low",
+            )
+            return GoalDecomposition(
+                original_text=text,
+                goal_type=goal_type,
+                phases=[phase],
+                total_estimated_steps=len(plan.tasks),
+                requires_long_running=False,
+                workspace=workspace,
+            )
+
+        phases = self._split_into_phases(plan.tasks, text, goal_type)
+
+        requires_long_running = goal_type in {"recurring", "pipeline", "migration", "backup_routine"} or len(plan.tasks) > 8
+
+        return GoalDecomposition(
+            original_text=text,
+            goal_type=goal_type,
+            phases=phases,
+            total_estimated_steps=sum(len(p.tasks) for p in phases),
+            requires_long_running=requires_long_running,
+            workspace=workspace,
+        )
+
+    def _split_into_phases(self, tasks: List[Task], text: str, goal_type: str) -> List[GoalPhase]:
+        if not tasks:
+            return []
+
+        if goal_type == "explicit_phased":
+            return self._split_by_explicit_phases(tasks, text)
+
+        tool_groups: Dict[str, List[Task]] = {}
+        for task in tasks:
+            tool_groups.setdefault(task.tool, []).append(task)
+
+        if len(tool_groups) <= 1:
+            max_per_phase = 5
+            phases = []
+            for i in range(0, len(tasks), max_per_phase):
+                batch = tasks[i:i + max_per_phase]
+                phase_idx = len(phases)
+                phase = GoalPhase(
+                    phase_id=f"phase-{phase_idx}",
+                    title=f"Batch {phase_idx + 1}",
+                    description=f"Execute tasks {i + 1} to {i + len(batch)}",
+                    tasks=batch,
+                    depends_on_phases=[f"phase-{phase_idx - 1}"] if phase_idx > 0 else [],
+                    priority=50 + phase_idx,
+                    estimated_complexity="medium" if len(batch) > 3 else "low",
+                )
+                phases.append(phase)
+            return phases
+
+        PHASE_ORDER = [
+            ({"share_discovery", "software_inventory", "os", "document_intelligence"}, "Discovery & Inventory"),
+            ({"package_manager", "env_manager", "driver_manager"}, "Installation & Configuration"),
+            ({"desktop", "windows_ui", "office"}, "Application Automation"),
+            ({"filesystem", "artifact", "sandbox"}, "File Operations & Processing"),
+            ({"browser", "web"}, "Web Operations"),
+            ({"memory", "dynamic_tool"}, "Memory & Tooling"),
+            ({"shell"}, "Shell Execution"),
+        ]
+
+        phases = []
+        assigned_tasks = set()
+        prev_phase_id = None
+
+        for tool_set, phase_title in PHASE_ORDER:
+            phase_tasks = []
+            for tool in tool_set:
+                phase_tasks.extend(tool_groups.get(tool, []))
+            if not phase_tasks:
+                continue
+            for t in phase_tasks:
+                assigned_tasks.add(t.id)
+            phase_idx = len(phases)
+            phase = GoalPhase(
+                phase_id=f"phase-{phase_idx}",
+                title=phase_title,
+                description=f"{phase_title}: {len(phase_tasks)} task(s)",
+                tasks=phase_tasks,
+                depends_on_phases=[prev_phase_id] if prev_phase_id else [],
+                priority=50 + phase_idx,
+                estimated_complexity="high" if len(phase_tasks) > 5 else "medium" if len(phase_tasks) > 2 else "low",
+            )
+            phases.append(phase)
+            prev_phase_id = phase.phase_id
+
+        remaining = [t for t in tasks if t.id not in assigned_tasks]
+        if remaining:
+            phase_idx = len(phases)
+            phases.append(GoalPhase(
+                phase_id=f"phase-{phase_idx}",
+                title="Additional Tasks",
+                description=f"Remaining tasks: {len(remaining)}",
+                tasks=remaining,
+                depends_on_phases=[prev_phase_id] if prev_phase_id else [],
+                priority=50 + phase_idx,
+                estimated_complexity="low",
+            ))
+
+        return phases
+
+    def _split_by_explicit_phases(self, tasks: List[Task], text: str) -> List[GoalPhase]:
+        parts = re.split(r"(?:fase|phase|etapa)\s*\d+[:\s]*", text.lower())
+        parts = [p.strip() for p in parts if p.strip()]
+        if len(parts) <= 1:
+            return [GoalPhase(
+                phase_id="phase-0",
+                title="Single phase",
+                description=text,
+                tasks=tasks,
+                priority=50,
+                estimated_complexity="medium",
+            )]
+
+        phase_size = max(1, len(tasks) // len(parts))
+        phases = []
+        for i, part_desc in enumerate(parts):
+            start = i * phase_size
+            end = start + phase_size if i < len(parts) - 1 else len(tasks)
+            phase_tasks = tasks[start:end] if start < len(tasks) else []
+            phases.append(GoalPhase(
+                phase_id=f"phase-{i}",
+                title=f"Phase {i + 1}: {part_desc[:60]}",
+                description=part_desc,
+                tasks=phase_tasks,
+                depends_on_phases=[f"phase-{i - 1}"] if i > 0 else [],
+                priority=50 + i,
+                estimated_complexity="medium",
+            ))
+        return phases
 
     def _detect_dependencies(self, tasks: List[Task]) -> List[Task]:
         # Simple rule: if there's an install task for a package that will be used by a later task, make later depend on install.

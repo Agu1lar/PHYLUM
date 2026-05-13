@@ -34,6 +34,15 @@ Ele ja possui:
 - processamento interno de artefatos (text, CSV, JSON, PDF, DOCX, XLSX, MSG) sem abrir no desktop
 - auto-criacao e persistencia de micro-ferramentas dinamicas reutilizaveis entre runs
 - planejamento dinamico multi-step com fallback proativo via sandbox e dynamic tools
+- daemon local sempre ativo com polling de fila, promocao de goals diferidos e recuperacao de stale
+- fila duravel de objetivos com prioridade, retry automatico, scheduling e hierarquia de goals
+- sessoes duraveis por objetivo e workspace com checkpoint, fases, contexto acumulado e expiracao
+- jobs de longa duracao com checkpoint real e retomada automatica apos restart
+- decomposicao de objetivos complexos em fases ordenadas com dependencias
+- decisao autonoma entre processamento interno (artifact/sandbox) e desktop (apps nativos, UI, Office COM)
+- recuperacao inteligente de falhas com geracao automatica de scripts alternativos
+- preenchimento autonomo de lacunas de tools via sandbox scripts e dynamic tools
+- orquestracao de tarefas multi-fonte com scripts gerados em tempo real (emails + planilha + relatorio)
 
 ## Arquitetura
 
@@ -62,6 +71,9 @@ Arquivos centrais:
 - `dynamic_tool_creator.py`
 - `world_model.py`
 - `strategy_memory.py`
+- `durable_queue.py`
+- `session_manager.py`
+- `execution_strategy.py`
 
 ## Superficie operacional atual
 
@@ -118,6 +130,15 @@ Exemplos praticos do nivel atual:
 - persistir automaticamente shares, apps, seletores e caminhos descobertos no world model para reutilizacao futura
 - consultar estrategias bem-sucedidas anteriores antes de executar tarefas complexas
 - reaproveitar seletores UI, caminhos de rede e localizacoes de apps de runs anteriores sem re-discovery
+- enfileirar objetivos com prioridade, retry automatico e agendamento futuro em fila duravel SQLite
+- operar com daemon sempre ativo que processa a fila de goals, promove goals diferidos e recupera goals travados
+- manter sessoes duraveis por objetivo e workspace que sobrevivem restart e acumulam contexto entre runs
+- retomar jobs de longa duracao do ultimo checkpoint real apos crash ou restart do backend
+- decompor automaticamente objetivos complexos em fases ordenadas com dependencias inter-fase
+- decidir autonomamente quando processar dados internamente (artifact/sandbox) vs. usar apps nativos do desktop
+- receber tarefas complexas multi-fonte (ex: "leia emails, cruze com planilha, crie relatorio") e resolver com scripts gerados em tempo real
+- contornar a ausencia de tools especificas gerando scripts de automacao ou analise sob demanda
+- recuperar automaticamente de falhas operacionais criando abordagens ou scripts alternativos quando o caminho primario falha
 
 ## O que o projeto ainda nao e
 
@@ -127,7 +148,8 @@ Ele ja entrou na categoria certa, mas ainda faltam camadas de robustez para cheg
 Os gaps principais restantes sao:
 
 - mais adapters de dominio para fluxos reais do dia a dia
-- operacao sempre ativa mais robusta, com filas duraveis, jobs longos e retomada mais agressiva
+- testes end-to-end em cenarios reais com providers LLM configurados
+- hardening de sandbox e governanca para operacao completamente autonoma em producao
 
 ## Execucao rapida
 
@@ -227,21 +249,98 @@ A nova visao estabelece que o sistema nao deve ficar engessado as tools atuais. 
 - **Historico de estrategia bem-sucedida por objetivo** ✅: Strategy memory que registra sequencias de tool calls bem-sucedidas por goal_type, com confidence, used_count, context_tags e duration. Suporta record_success, record_failure, find_strategies, best_strategy e mark_reused. Estrategias com mais usos e maior confianca sao priorizadas. Implementado em `strategy_memory.py`.
 - **Reaproveitamento automatico de seletores, caminhos e candidatos validos** ✅: System prompt do AgenticLoop instrui o LLM a consultar o world model antes de re-descobrir (world_find_*), persistir apos discovery bem-sucedido (world_remember_*), e reforcar com world_touch apos reuso. Runtime auto-persiste discoveries de shares, apps e selectors no checkpoint flow. Planner atualizado com 35+ keywords para acoes do world model e strategy memory.
 
-### Fase 3 - Runtime sempre ativo e Planejamento de Longo Prazo
+### Fase 3 - Runtime sempre ativo e Planejamento de Longo Prazo ✅ Concluido
 
-- daemon local mais robusto para operacao continua
-- filas duraveis de objetivos e raciocinio de longo prazo do Planner para desmembrar tarefas complexas
-- jobs de longa duracao com retomada real apos restart
-- sessoes mais duraveis por objetivo e por workspace operacional
+- **Daemon local robusto** ✅: RuntimeManager agora inicia um daemon loop no startup que roda a cada 5s, promovendo goals diferidos/retrying para queued, recuperando goals stuck em running (stale_seconds=600), retomando jobs com checkpoint pendente e processando a fila de goals com ate 3 runs concorrentes. O daemon para graciosamente no shutdown. API /daemon/status expoe estado do daemon.
+- **Fila duravel de objetivos** ✅: DurableQueue implementa uma fila SQLite-backed com prioridade, retry automatico (max_retries + retry_delay_seconds), scheduling via scheduled_at, hierarquia de goals (parent_goal_id), workspaces, e lifecycle completo (queued -> running -> completed/failed/cancelled/retrying/deferred). APIs REST em /goals para enqueue, list, get e cancel. Cleanup automatico de goals antigos.
+- **Jobs de longa duracao com retomada real** ✅: Job checkpoints sao salvos automaticamente no _checkpoint_agent_session contendo agent_session, autonomy, runtime_context e progresso de tasks. Tabela job_checkpoints no SQLite com state_snapshot, step_index, total_steps e flag resumable. O daemon detecta checkpoints resumable e re-lanca pipelines com resume=True, restaurando o estado completo do agente. Checkpoint deletado apos terminal state.
+- **Sessoes duraveis por objetivo e workspace** ✅: SessionManager implementa sessoes SQLite-backed com objective, workspace, fases ordenadas (com advance_phase), contexto acumulado (merge_context), checkpoint incremental, run_ids/goal_ids, TTL/expires_at e status lifecycle (active/paused/completed/failed/expired). find_or_create_session permite reutilizar sessoes ativas. submit_run_with_session vincula automaticamente runs a sessoes. APIs REST em /sessions para create, list, get, close, checkpoint. Expiracao automatica de sessoes inativas pelo daemon.
 
-### Fase 4 - Release gates de Agente Autonomo
+### Fase 4 - Release gates de Agente Autonomo ✅ Concluido
 
-Antes de considerar o sistema concluido neste novo nivel de autonomia, os seguintes cenarios devem funcionar perfeitamente:
+- **Tarefas complexas multi-fonte resolvidas com scripts em tempo real** ✅: ExecutionStrategy.generate_orchestration_script gera scripts Python que leem multiplas fontes (Outlook via win32com, Excel via openpyxl, CSV, JSON, texto), cruzam dados e produzem relatorios/exportacoes. O system prompt do AgenticLoop instrui o LLM a preferir um unico sandbox.execute_python para tarefas multi-fonte ao inves de encadear 5+ tool calls separadas. Templates para read_email_outlook, read_excel_data, cross_reference_report e generate_report cobrem os cenarios mais comuns.
+- **Contorno autonomo de ausencia de tools** ✅: ExecutionStrategy.detect_tool_gap identifica tools inexistentes e propoe sandbox scripts como alternativa. O system prompt instrui o LLM a checar dynamic_tool.list primeiro, depois gerar sandbox scripts para preencher lacunas, e usar dynamic_tool.create para necessidades recorrentes. known_gaps cobrem email.read, report.generate e data.cross_reference.
+- **Decisao autonoma interno vs. desktop** ✅: ExecutionStrategy.decide_execution_mode classifica cada task em internal/desktop/script/native. Office COM reads (excel_read_range, outlook_search_messages, word_find_text) sao automaticamente redirecionadas para sandbox/artifact quando o objetivo e leitura de dados, nao interacao visual. Arquivos CSV/JSON/TXT/PDF/DOCX/XLSX sao processados internamente via artifact. RuntimeManager._apply_execution_strategy intercepta tasks no momento da criacao e redireciona transparentemente.
+- **Recuperacao inteligente com scripts alternativos** ✅: RecoveryEngine integra ExecutionStrategy.suggest_script_recovery como fallback antes de declarar falha terminal. Quando Office COM falha, gera script openpyxl/python-docx. Quando browser/Playwright falha, gera script urllib. Quando filesystem falha, gera script os/shutil. ActionExecutor._execute_script_recovery executa o script alternativo automaticamente e, se bem-sucedido, marca a task original como completed sem pedir intervencao do usuario.
 
-- O agente consegue receber uma tarefa complexa (ex: "leia meus ultimos emails, cruze com a planilha local X e crie um relatorio") e resolve-la criando scripts em tempo real.
-- O agente consegue contornar a ausencia de uma tool especifica criando um script de automacao ou analise sob demanda.
-- O agente decide autonomamente o momento mais eficiente para processar algo internamente vs. usar a maquina do usuario.
-- Recuperacao inteligente de falhas operacionais criando abordagens ou scripts alternativos se o caminho primario falhar.
+## Implementacoes futuras e riscos arquiteturais
+
+Esta secao documenta melhorias estruturais que o projeto vai precisar para escalar sem colapsar em complexidade. Sao observacoes criticas sobre o estado atual e direcoes concretas para o futuro.
+
+### 1. Governanca arquitetural rigida contra complexidade
+
+O projeto esta MUITO perto de virar complexo demais. Esse e o maior risco hoje. Ja existem: runtime, planner, memory, strategy memory, recovery, sandbox, dynamic tools, approvals, world model, UI automation, artifact pipeline, office adapters. Isso comeca a entrar no territorio de **distributed cognitive runtime**. Sem governanca arquitetural muito rigida, vira caos. Acoes futuras:
+
+- Definir contratos claros entre camadas (interfaces, nao implementacoes)
+- Estabelecer boundaries explicitos entre modulos
+- Criar testes de contrato entre componentes
+- Documentar invariantes arquiteturais que nao podem ser violados
+
+### 2. Arquitetura de eventos mais explicita
+
+O sistema ja e implicitamente event-driven, mas ainda parece procedural/orchestrated. A migracao mental deve ir para: **Event Bus**, **State Transitions**, **Execution Graph**. Retries, replanning, handoffs, recovery, approvals e pause/resume ja sao naturalmente orientados a eventos. Hoje o padrao e "runtime chama runtime" — no futuro isso escala mal. Acoes futuras:
+
+- Introduzir um event bus explicito entre componentes
+- Modelar transicoes de estado como eventos first-class
+- Desacoplar orchestration de execution via eventos
+- Permitir que novos consumers se inscrevam em eventos sem modificar producers
+
+### 3. Separacao entre reasoning e execution
+
+Hoje reasoning e execution estao relativamente acoplados. Futuramente o projeto vai precisar de camadas distintas:
+
+- **Cognitive layer**: planejamento, raciocinio, decisao de estrategia
+- **Operational layer**: orquestracao de tasks, retry, recovery
+- **Execution layer**: execucao real de tools, sandbox, UI automation
+- **State layer**: persistencia, world model, strategy memory
+
+Sem essa separacao, o planner comeca a conhecer demais o runtime, e isso vira acoplamento infernal. O objetivo e que cada camada possa evoluir independentemente.
+
+### 4. Hardening do sandbox
+
+A execucao dinamica de Python/PowerShell e um canhao nuclear arquitetural. Hoje funciona em ambiente controlado com timeout e isolamento basico, mas para autonomia real o projeto vai precisar de:
+
+- **Capability isolation**: restringir o que scripts podem acessar
+- **Filesystem scopes**: limitar escrita/leitura a diretorios especificos por run
+- **Command policies**: whitelist/blacklist de comandos e modulos
+- **Syscall restrictions**: limitar operacoes de sistema disponiveis
+- **Provenance**: rastrear origem de cada script executado (quem gerou, por que, quando)
+- **Audit trails**: log completo de tudo que o sandbox executou, com inputs e outputs
+
+Esse e exatamente o tipo de coisa que explode em runtime agentic sem essas protecoes.
+
+### 5. Verificacao semantica robusta
+
+Hoje o agente executa, verifica superficialmente e continua. Mas autonomia robusta exige verificacao semantica real:
+
+- **Goal verification**: "o objetivo foi realmente alcancado?"
+- **Semantic validation**: "o resultado faz sentido no contexto do pedido?"
+- **Postcondition checks**: "o relatorio foi criado?", "o Excel contem os dados corretos?", "o email foi enviado para a pessoa certa?"
+
+Isso e MUITO mais dificil do que executar tools. Requer que o agente saiba interpretar o resultado no contexto do objetivo original, nao apenas verificar se a tool retornou success.
+
+### 6. Execution economics
+
+O projeto ainda vai precisar de controle economico de execucao:
+
+- **Custo operacional**: quanto cada run consome em tokens, tempo e recursos
+- **Complexidade de caminho**: quantas tools e passos cada abordagem exige
+- **Heuristicas de execucao**: quando parar de explorar e pedir ajuda
+- **Otimizacao de caminho**: escolher a rota mais eficiente entre alternativas
+
+Agentes autonomos podem facilmente gastar tokens demais, explorar caminhos inuteis e entrar em loops caros. Sem execution economics, o custo operacional cresce sem controle.
+
+### 7. Planner com grafo de execucao
+
+O planner atual e relativamente linear. Eventualmente vai precisar evoluir para:
+
+- **Task graph**: tarefas como nos em um grafo, nao uma lista sequencial
+- **Dependency graph**: dependencias explicitas entre tarefas
+- **Branch execution**: caminhos alternativos que podem ser tentados em paralelo
+- **Speculative execution**: iniciar sub-tarefas antes de confirmar que serao necessarias
+- **Partial completion**: concluir parcialmente uma tarefa e continuar com o que ja esta pronto
+
+Isso e especialmente critico para tarefas longas onde o plano precisa adaptar-se em tempo real.
 
 ## Documentacao complementar
 

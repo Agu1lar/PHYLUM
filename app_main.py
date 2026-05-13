@@ -110,6 +110,37 @@ class ApprovalResolutionRequest(BaseModel):
     scope: Literal["single", "run_scope"] = "single"
 
 
+class GoalRequest(BaseModel):
+    inputs: Dict[str, Any]
+    workspace: str = "default"
+    priority: int = 50
+    runtime_mode: str = "agentic"
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    parent_goal_id: Optional[str] = None
+    max_retries: int = 2
+    retry_delay_seconds: int = 30
+    scheduled_at: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+class SessionRequest(BaseModel):
+    workspace: str = "default"
+    objective: Optional[str] = None
+    context: Optional[Dict[str, Any]] = None
+    phases: Optional[list] = None
+    ttl_hours: int = 168
+
+
+class SessionRunRequest(BaseModel):
+    inputs: Dict[str, Any]
+    workspace: str = "default"
+    objective: Optional[str] = None
+    runtime_mode: str = "agentic"
+    provider: Optional[str] = None
+    model: Optional[str] = None
+
+
 # WebSocket broadcaster state
 @app.on_event("startup")
 async def startup():
@@ -119,10 +150,13 @@ async def startup():
     global runtime
     runtime = RuntimeManager(emit_event, credential_store=credential_store, provider_client=provider_client)
     await runtime.rehydrate_runs()
+    await runtime.start_daemon()
 
 
 @app.on_event("shutdown")
 async def shutdown():
+    if runtime is not None:
+        await runtime.stop_daemon()
     task = getattr(app.state, 'broadcaster', None)
     if task:
         task.cancel()
@@ -246,6 +280,136 @@ async def resume_run(request_id: str):
         raise HTTPException(status_code=400, detail=str(exc))
     state = await runtime.get_state(request_id)
     return {"ok": True, "result": result, "state": jsonable_encoder(state)}
+
+
+@app.post('/goals')
+async def enqueue_goal(req: GoalRequest):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    goal = await runtime.enqueue_goal(
+        req.inputs,
+        workspace=req.workspace,
+        priority=req.priority,
+        runtime_mode=req.runtime_mode,
+        provider=req.provider,
+        model=req.model,
+        parent_goal_id=req.parent_goal_id,
+        max_retries=req.max_retries,
+        retry_delay_seconds=req.retry_delay_seconds,
+        scheduled_at=req.scheduled_at,
+        session_id=req.session_id,
+    )
+    return JSONResponse({"goal": jsonable_encoder(goal)})
+
+
+@app.get('/goals')
+async def list_goals(workspace: Optional[str] = None, status: Optional[str] = None, limit: int = 50):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    goals = await runtime.list_goals(workspace=workspace, status=status, limit=limit)
+    return {"goals": jsonable_encoder(goals)}
+
+
+@app.get('/goals/{goal_id}')
+async def get_goal(goal_id: str):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    goal = await runtime.goal_queue.get_goal(goal_id)
+    if goal is None:
+        raise HTTPException(status_code=404, detail="goal not found")
+    return jsonable_encoder(goal)
+
+
+@app.post('/goals/{goal_id}/cancel')
+async def cancel_goal(goal_id: str):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    try:
+        result = await runtime.cancel_goal(goal_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="goal not found")
+    return {"ok": True, "result": jsonable_encoder(result)}
+
+
+@app.post('/sessions')
+async def create_session(req: SessionRequest):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    session = await runtime.create_session(
+        workspace=req.workspace,
+        objective=req.objective,
+        context=req.context,
+        phases=req.phases,
+        ttl_hours=req.ttl_hours,
+    )
+    return JSONResponse({"session": jsonable_encoder(session)})
+
+
+@app.get('/sessions')
+async def list_sessions(workspace: Optional[str] = None, status: Optional[str] = None, limit: int = 50):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    sessions = await runtime.list_sessions(workspace=workspace, status=status, limit=limit)
+    return {"sessions": jsonable_encoder(sessions)}
+
+
+@app.get('/sessions/{session_id}')
+async def get_session(session_id: str):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    session = await runtime.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return jsonable_encoder(session)
+
+
+@app.post('/sessions/{session_id}/close')
+async def close_session(session_id: str):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    result = await runtime.close_session(session_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return {"ok": True, "session": jsonable_encoder(result)}
+
+
+@app.post('/sessions/{session_id}/checkpoint')
+async def session_checkpoint(session_id: str, payload: Dict[str, Any]):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    result = await runtime.session_checkpoint(session_id, payload)
+    if result is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return {"ok": True, "session": jsonable_encoder(result)}
+
+
+@app.post('/sessions/run')
+async def submit_session_run(req: SessionRunRequest):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    result = await runtime.submit_run_with_session(
+        req.inputs,
+        workspace=req.workspace,
+        objective=req.objective,
+        runtime_mode=req.runtime_mode,
+        provider=req.provider,
+        model=req.model,
+    )
+    return JSONResponse({"result": jsonable_encoder(result)})
+
+
+@app.get('/daemon/status')
+async def daemon_status():
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    pending = await runtime.goal_queue.pending_count()
+    active_sessions = await runtime.list_sessions(status="active")
+    return {
+        "daemon_running": runtime._daemon_running,
+        "pending_goals": pending,
+        "active_sessions": len(active_sessions),
+        "active_runs": len(runtime.active_runs),
+    }
 
 
 @app.post('/approval/{approval_id}')

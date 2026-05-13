@@ -1,7 +1,8 @@
-"""Async persistence wrapper using aiosqlite for key-value and approvals."""
+"""Async persistence wrapper using aiosqlite for key-value, approvals, and job checkpoints."""
 import aiosqlite
 import json
 import logging
+from datetime import datetime
 from typing import Optional, Any, List, Dict
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,20 @@ class Persistence:
                 status TEXT,
                 payload TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )'''
+            )
+            await db.execute(
+                '''CREATE TABLE IF NOT EXISTS job_checkpoints (
+                job_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL,
+                session_id TEXT,
+                goal_id TEXT,
+                state_snapshot TEXT NOT NULL,
+                step_index INTEGER NOT NULL DEFAULT 0,
+                total_steps INTEGER NOT NULL DEFAULT 0,
+                resumable INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
                 )'''
             )
             cur = await db.execute("PRAGMA table_info(approvals)")
@@ -157,3 +172,83 @@ class Persistence:
                 }
                 for row in rows
             ]
+
+    async def save_job_checkpoint(
+        self,
+        job_id: str,
+        request_id: str,
+        state_snapshot: Dict[str, Any],
+        *,
+        session_id: Optional[str] = None,
+        goal_id: Optional[str] = None,
+        step_index: int = 0,
+        total_steps: int = 0,
+        resumable: bool = True,
+    ) -> None:
+        await self._ensure()
+        now = datetime.utcnow().isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                '''REPLACE INTO job_checkpoints
+                (job_id, request_id, session_id, goal_id, state_snapshot,
+                 step_index, total_steps, resumable, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+                        COALESCE((SELECT created_at FROM job_checkpoints WHERE job_id = ?), ?), ?)''',
+                (job_id, request_id, session_id, goal_id,
+                 json.dumps(state_snapshot, default=str),
+                 step_index, total_steps, 1 if resumable else 0,
+                 job_id, now, now),
+            )
+            await db.commit()
+
+    async def get_job_checkpoint(self, job_id: str) -> Optional[Dict[str, Any]]:
+        await self._ensure()
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                'SELECT job_id, request_id, session_id, goal_id, state_snapshot, step_index, total_steps, resumable, created_at, updated_at FROM job_checkpoints WHERE job_id = ?',
+                (job_id,),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return None
+            return {
+                "job_id": row[0],
+                "request_id": row[1],
+                "session_id": row[2],
+                "goal_id": row[3],
+                "state_snapshot": json.loads(row[4]),
+                "step_index": row[5],
+                "total_steps": row[6],
+                "resumable": bool(row[7]),
+                "created_at": row[8],
+                "updated_at": row[9],
+            }
+
+    async def list_resumable_checkpoints(self) -> List[Dict[str, Any]]:
+        await self._ensure()
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                'SELECT job_id, request_id, session_id, goal_id, state_snapshot, step_index, total_steps, resumable, created_at, updated_at FROM job_checkpoints WHERE resumable = 1 ORDER BY updated_at DESC',
+            )
+            rows = await cur.fetchall()
+            return [
+                {
+                    "job_id": row[0],
+                    "request_id": row[1],
+                    "session_id": row[2],
+                    "goal_id": row[3],
+                    "state_snapshot": json.loads(row[4]),
+                    "step_index": row[5],
+                    "total_steps": row[6],
+                    "resumable": bool(row[7]),
+                    "created_at": row[8],
+                    "updated_at": row[9],
+                }
+                for row in rows
+            ]
+
+    async def delete_job_checkpoint(self, job_id: str) -> None:
+        await self._ensure()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('DELETE FROM job_checkpoints WHERE job_id = ?', (job_id,))
+            await db.commit()

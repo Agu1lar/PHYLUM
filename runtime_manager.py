@@ -26,8 +26,14 @@ from recovery_engine import RecoveryEngine
 from risk_classifier import explain_command, normalize_command
 from world_model import WorldModel
 from strategy_memory import StrategyMemory
+from durable_queue import DurableQueue
+from execution_strategy import ExecutionStrategy
+from session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
+
+DAEMON_POLL_INTERVAL = 5
+STALE_RUNNING_THRESHOLD = 600
 
 
 def _now() -> str:
@@ -74,6 +80,9 @@ class RuntimeManager:
         self.desktop_agent = DesktopWindowsAgent()
         self.world_model = WorldModel(self.persistence)
         self.strategy_memory = StrategyMemory(self.persistence)
+        self.goal_queue = DurableQueue(self.persistence)
+        self.session_manager = SessionManager(self.persistence)
+        self.execution_strategy = ExecutionStrategy()
         self.agentic_loop = AgenticLoop(
             client=self.provider_client,
             safety=self.safety,
@@ -85,6 +94,8 @@ class RuntimeManager:
         self.run_cancel_events: Dict[str, asyncio.Event] = {}
         self.approval_waiters: Dict[str, asyncio.Future] = {}
         self.approval_run_map: Dict[str, str] = {}
+        self._daemon_task: Optional[asyncio.Task] = None
+        self._daemon_running = False
 
     async def submit_run(
         self,
@@ -130,6 +141,276 @@ class RuntimeManager:
             await self._persist_state(state)
             recovered.append(state)
         return recovered
+
+    # ── Daemon lifecycle ────────────────────────────────────────────────
+
+    async def start_daemon(self) -> None:
+        if self._daemon_running:
+            return
+        self._daemon_running = True
+        self._daemon_task = asyncio.create_task(self._daemon_loop())
+        logger.info("Runtime daemon started (poll_interval=%ds)", DAEMON_POLL_INTERVAL)
+
+    async def stop_daemon(self) -> None:
+        self._daemon_running = False
+        if self._daemon_task and not self._daemon_task.done():
+            self._daemon_task.cancel()
+            try:
+                await self._daemon_task
+            except asyncio.CancelledError:
+                pass
+        self._daemon_task = None
+        logger.info("Runtime daemon stopped")
+
+    async def _daemon_loop(self) -> None:
+        while self._daemon_running:
+            try:
+                await self._daemon_tick()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Daemon tick failed")
+            await asyncio.sleep(DAEMON_POLL_INTERVAL)
+
+    async def _daemon_tick(self) -> None:
+        promoted = await self.goal_queue.promote_deferred()
+        if promoted:
+            logger.info("Daemon promoted %d deferred/retrying goals to queued", promoted)
+
+        recovered = await self.goal_queue.recover_stale_running(stale_seconds=STALE_RUNNING_THRESHOLD)
+        if recovered:
+            logger.info("Daemon recovered %d stale running goals", recovered)
+
+        await self._resume_checkpointed_jobs()
+
+        await self._process_goal_queue()
+
+        await self.session_manager.expire_stale(inactive_hours=168)
+
+    async def _process_goal_queue(self) -> None:
+        running_count = sum(1 for state in self.active_runs.values() if state.get("status") in {"running", "planning", "resuming"})
+        max_concurrent = 3
+        while running_count < max_concurrent:
+            goal = await self.goal_queue.dequeue()
+            if not goal:
+                break
+            try:
+                request_id = await self._submit_goal_run(goal)
+                await self.goal_queue.mark_running(goal["goal_id"], request_id=request_id)
+                running_count += 1
+            except Exception as exc:
+                logger.exception("Failed to start run for goal %s", goal["goal_id"])
+                await self.goal_queue.mark_failed(goal["goal_id"], str(exc))
+
+    async def _submit_goal_run(self, goal: Dict[str, Any]) -> str:
+        request_id = await self.submit_run(
+            goal["inputs"],
+            runtime_mode=goal.get("runtime_mode", "agentic"),
+            provider=goal.get("provider"),
+            model=goal.get("model"),
+        )
+        state = self.active_runs.get(request_id)
+        if state:
+            state["goal_id"] = goal["goal_id"]
+            state["session_id"] = goal.get("session_id")
+            await self._persist_state(state)
+
+        session_id = goal.get("session_id")
+        if session_id:
+            await self.session_manager.add_run(session_id, request_id)
+            await self.session_manager.add_goal(session_id, goal["goal_id"])
+
+        return request_id
+
+    # ── Durable goal queue public API ────────────────────────────────
+
+    async def enqueue_goal(
+        self,
+        inputs: Dict[str, Any],
+        *,
+        workspace: str = "default",
+        priority: int = 50,
+        runtime_mode: str = "agentic",
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        parent_goal_id: Optional[str] = None,
+        max_retries: int = 2,
+        retry_delay_seconds: int = 30,
+        scheduled_at: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        goal = await self.goal_queue.enqueue(
+            inputs,
+            workspace=workspace,
+            priority=priority,
+            runtime_mode=runtime_mode,
+            provider=provider,
+            model=model,
+            parent_goal_id=parent_goal_id,
+            max_retries=max_retries,
+            retry_delay_seconds=retry_delay_seconds,
+            scheduled_at=scheduled_at,
+        )
+        if session_id:
+            goal["session_id"] = session_id
+            await self.session_manager.add_goal(session_id, goal["goal_id"])
+        await self._emit("goal_enqueued", {"goal": goal})
+        return goal
+
+    async def list_goals(self, **kwargs) -> List[Dict[str, Any]]:
+        return await self.goal_queue.list_goals(**kwargs)
+
+    async def cancel_goal(self, goal_id: str) -> Dict[str, Any]:
+        goal = await self.goal_queue.get_goal(goal_id)
+        if not goal:
+            raise KeyError(goal_id)
+        if goal["status"] in {"completed", "failed", "cancelled"}:
+            return {"goal_id": goal_id, "status": goal["status"], "already_terminal": True}
+        if goal.get("request_id"):
+            try:
+                await self.cancel_run(goal["request_id"])
+            except (KeyError, Exception):
+                pass
+        await self.goal_queue.mark_cancelled(goal_id)
+        await self._emit("goal_cancelled", {"goal_id": goal_id})
+        return {"goal_id": goal_id, "status": "cancelled", "already_terminal": False}
+
+    # ── Job checkpoint & resume ──────────────────────────────────────
+
+    async def save_job_checkpoint(
+        self,
+        request_id: str,
+        *,
+        step_index: int = 0,
+        total_steps: int = 0,
+    ) -> None:
+        state = self.active_runs.get(request_id)
+        if not state:
+            return
+        snapshot = {
+            "status": state.get("status"),
+            "current_node": state.get("current_node"),
+            "current_task_id": state.get("current_task_id"),
+            "tasks": state.get("tasks"),
+            "agent_session": state.get("agent_session"),
+            "autonomy": state.get("autonomy"),
+            "runtime_context": state.get("runtime_context"),
+            "inputs": state.get("inputs"),
+            "outputs": state.get("outputs"),
+            "runtime_mode": state.get("runtime_mode"),
+            "provider": state.get("provider"),
+            "model": state.get("model"),
+        }
+        job_id = f"job-{request_id}"
+        await self.persistence.save_job_checkpoint(
+            job_id,
+            request_id,
+            snapshot,
+            session_id=state.get("session_id"),
+            goal_id=state.get("goal_id"),
+            step_index=step_index,
+            total_steps=total_steps,
+        )
+
+    async def _resume_checkpointed_jobs(self) -> None:
+        checkpoints = await self.persistence.list_resumable_checkpoints()
+        for cp in checkpoints:
+            request_id = cp["request_id"]
+            if request_id in self.run_tasks and not self.run_tasks[request_id].done():
+                continue
+            if request_id in self.active_runs:
+                status = self.active_runs[request_id].get("status")
+                if status in {"completed", "failed", "cancelled"}:
+                    await self.persistence.delete_job_checkpoint(cp["job_id"])
+                    continue
+                if status in {"running", "planning"}:
+                    continue
+
+            state = self.active_runs.get(request_id)
+            if not state:
+                persisted = await self.persistence.get_kv(f"state:{request_id}")
+                if not persisted:
+                    await self.persistence.delete_job_checkpoint(cp["job_id"])
+                    continue
+                if persisted.get("status") in {"completed", "failed", "cancelled"}:
+                    await self.persistence.delete_job_checkpoint(cp["job_id"])
+                    continue
+                state = persisted
+                self.active_runs[request_id] = state
+
+            snapshot = cp.get("state_snapshot") or {}
+            if snapshot.get("agent_session"):
+                state["agent_session"] = snapshot["agent_session"]
+            if snapshot.get("autonomy"):
+                state["autonomy"] = snapshot["autonomy"]
+            if snapshot.get("runtime_context"):
+                state["runtime_context"] = snapshot["runtime_context"]
+
+            state.setdefault("recovery", {})["resumed_from_checkpoint"] = True
+            state["recovery"]["checkpoint_step"] = cp.get("step_index", 0)
+
+            self.run_cancel_events.setdefault(request_id, asyncio.Event())
+            self.run_tasks[request_id] = asyncio.create_task(self._run_pipeline(request_id, resume=True))
+            logger.info("Resumed job %s from checkpoint (step %d/%d)", request_id, cp.get("step_index", 0), cp.get("total_steps", 0))
+            await self.persistence.delete_job_checkpoint(cp["job_id"])
+
+    # ── Session public API ───────────────────────────────────────────
+
+    async def create_session(self, **kwargs) -> Dict[str, Any]:
+        session = await self.session_manager.create_session(**kwargs)
+        await self._emit("session_created", {"session": session})
+        return session
+
+    async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        return await self.session_manager.get_session(session_id)
+
+    async def list_sessions(self, **kwargs) -> List[Dict[str, Any]]:
+        return await self.session_manager.list_sessions(**kwargs)
+
+    async def close_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        session = await self.session_manager.update_session(session_id, {"status": "completed"})
+        if session:
+            await self._emit("session_closed", {"session_id": session_id})
+        return session
+
+    async def session_checkpoint(self, session_id: str, checkpoint_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        return await self.session_manager.checkpoint(session_id, checkpoint_data)
+
+    async def find_or_create_session(
+        self,
+        *,
+        workspace: str = "default",
+        objective: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        existing = await self.session_manager.find_active_session(workspace=workspace, objective=objective)
+        if existing:
+            return existing
+        return await self.create_session(workspace=workspace, objective=objective, **kwargs)
+
+    async def submit_run_with_session(
+        self,
+        inputs: Dict[str, Any],
+        *,
+        workspace: str = "default",
+        objective: Optional[str] = None,
+        runtime_mode: str = "agentic",
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        session = await self.find_or_create_session(
+            workspace=workspace,
+            objective=objective or inputs.get("text") or inputs.get("prompt"),
+        )
+        request_id = await self.submit_run(
+            inputs, runtime_mode=runtime_mode, provider=provider, model=model,
+        )
+        state = self.active_runs.get(request_id)
+        if state:
+            state["session_id"] = session["session_id"]
+            await self._persist_state(state)
+        await self.session_manager.add_run(session["session_id"], request_id)
+        return {"request_id": request_id, "session_id": session["session_id"], "session": session}
 
     async def cancel_run(self, request_id: str) -> Dict[str, Any]:
         state = self.active_runs.get(request_id)
@@ -429,6 +710,8 @@ class RuntimeManager:
             "approval_grants": [],
             "handoffs": [],
             "pending_handoff": None,
+            "session_id": None,
+            "goal_id": None,
             "agent_session": {},
             "runtime_context": {
                 "window": None,
@@ -759,6 +1042,37 @@ class RuntimeManager:
             },
             state=state,
         )
+        await self._finalize_goal_for_run(state, completed=False, error=error)
+
+    async def _finalize_goal_for_run(self, state: Dict[str, Any], *, completed: bool, summary: Optional[str] = None, error: Optional[str] = None) -> None:
+        goal_id = state.get("goal_id")
+        if not goal_id:
+            return
+        try:
+            if completed:
+                await self.goal_queue.mark_completed(goal_id, result_summary=summary)
+            else:
+                result = await self.goal_queue.mark_failed(goal_id, error or "run failed")
+                if result and result.get("status") == "retrying":
+                    logger.info("Goal %s scheduled for retry", goal_id)
+        except Exception:
+            logger.debug("Failed to finalize goal %s", goal_id, exc_info=True)
+
+        session_id = state.get("session_id")
+        if session_id:
+            try:
+                session = await self.session_manager.get_session(session_id)
+                if session:
+                    total_steps = session.get("total_steps", 0) + len(state.get("tasks", []))
+                    await self.session_manager.update_session(session_id, {"total_steps": total_steps})
+            except Exception:
+                logger.debug("Failed to update session %s step count", session_id, exc_info=True)
+
+        job_id = f"job-{state['request_id']}"
+        try:
+            await self.persistence.delete_job_checkpoint(job_id)
+        except Exception:
+            pass
 
     async def _mark_run_cancelled(self, state: Dict[str, Any]) -> None:
         current_task_id = state.get("current_task_id")
@@ -818,6 +1132,7 @@ class RuntimeManager:
             {"request_id": state["request_id"], "status": state["status"], "reflection": final_reflection},
             state=state,
         )
+        await self._finalize_goal_for_run(state, completed=True, summary=summary)
 
     async def _set_run_status(
         self,
@@ -885,6 +1200,17 @@ class RuntimeManager:
             autonomy["goal_verifications"].append(_jsonable(goal_verification))
             autonomy["goal_verifications"] = autonomy["goal_verifications"][-100:]
         await self._persist_state(state)
+
+        completed_tasks = sum(1 for t in state.get("tasks", []) if t.get("status") == "completed")
+        total_tasks = len(state.get("tasks", []))
+        try:
+            await self.save_job_checkpoint(
+                state["request_id"],
+                step_index=completed_tasks,
+                total_steps=total_tasks,
+            )
+        except Exception:
+            logger.debug("Failed to save job checkpoint for %s", state.get("request_id"), exc_info=True)
 
     async def _record_task_observation(
         self,
@@ -1084,7 +1410,42 @@ class RuntimeManager:
 
     def _agentic_task_from_tool_call(self, tool_name: str, arguments: Dict[str, Any], step: int) -> Dict[str, Any]:
         task_id = f"agentic-{step}-{uuid.uuid4().hex[:6]}"
-        return normalize_agentic_task(tool_name, arguments, task_id)
+        task = normalize_agentic_task(tool_name, arguments, task_id)
+        task = self._apply_execution_strategy(task)
+        return task
+
+    def _apply_execution_strategy(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply execution strategy to potentially redirect a task to a more efficient path."""
+        tool = task.get("tool", "")
+        action = task.get("action", "")
+        params = task.get("params") or {}
+
+        decision = self.execution_strategy.decide_execution_mode(
+            tool=tool, action=action, params=params,
+            available_tools=list(canonical_supported_tools()),
+        )
+
+        if decision["mode"] == "internal" and decision.get("alternative"):
+            alt = decision["alternative"]
+            task["original_tool"] = tool
+            task["original_action"] = action
+            task["tool"] = alt["tool"]
+            task["action"] = alt["action"]
+            task["params"] = alt.get("params", params)
+            task["execution_strategy"] = {
+                "mode": decision["mode"],
+                "reason": decision["reason"],
+                "redirected": True,
+            }
+            task["title"] = f"{task.get('title', '')} (via {alt['tool']}.{alt['action']})"
+        else:
+            task["execution_strategy"] = {
+                "mode": decision["mode"],
+                "reason": decision["reason"],
+                "redirected": False,
+            }
+
+        return task
 
     def _task_to_state(self, task: Task) -> Dict[str, Any]:
         title = self._task_title(task)
