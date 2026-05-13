@@ -29,6 +29,7 @@ from strategy_memory import StrategyMemory
 from durable_queue import DurableQueue
 from execution_strategy import ExecutionStrategy
 from graph_definitions import build_agentic_graph, build_local_graph, build_manual_graph
+from semantic_index import SemanticIndex
 from session_manager import SessionManager
 from state_graph import GraphExecutor, NodeType
 
@@ -80,9 +81,10 @@ class RuntimeManager:
         self.recovery_engine = RecoveryEngine()
         self.action_executor = ActionExecutor(self)
         self.desktop_agent = DesktopWindowsAgent()
-        self.world_model = WorldModel(self.persistence)
+        self.semantic_index = SemanticIndex()
+        self.world_model = WorldModel(self.persistence, semantic_index=self.semantic_index)
         self._wire_world_model_to_ui_tool()
-        self.strategy_memory = StrategyMemory(self.persistence)
+        self.strategy_memory = StrategyMemory(self.persistence, semantic_index=self.semantic_index)
         self.goal_queue = DurableQueue(self.persistence)
         self.session_manager = SessionManager(self.persistence)
         self.execution_strategy = ExecutionStrategy()
@@ -1389,20 +1391,17 @@ class RuntimeManager:
     async def _execute_task_with_recovery(self, state: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
         graph_exec = self._graph_executor_for(state)
         if graph_exec and "_graph" not in state:
-            from state_graph import GraphTraversalLog
             state["_graph"] = {
                 "current_node": "executor",
-                "traversal": GraphTraversalLog(),
+                "traversal_entries": [],
+                "traversal_visited": [],
                 "visits": 0,
             }
         if graph_exec:
             state["_graph"]["current_node"] = "executor"
-            state["_graph"]["traversal"].record(
-                node_id="executor",
-                node_type=NodeType.EXECUTOR.value,
-                result_keys=None,
-                error=None,
-            )
+            entry = {"node_id": "executor", "node_type": NodeType.EXECUTOR.value, "result_keys": None, "error": None}
+            state["_graph"]["traversal_entries"].append(entry)
+            state["_graph"]["traversal_visited"].append("executor")
         return await self.action_executor.execute(state, task)
 
     async def _plan_tasks(self, state: Dict[str, Any]) -> Dict[str, Any]:

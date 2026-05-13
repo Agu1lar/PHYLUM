@@ -9,6 +9,7 @@ from multi_provider_client import MultiProviderClient
 from nodes_reflection import ReflectionNode
 from nodes_safety import SafetyNode
 from nodes_tool_router import ToolRouterNode
+from prompt_cache import PromptCache
 
 
 TaskFactory = Callable[[str, Dict[str, Any], int], Dict[str, Any]]
@@ -32,6 +33,7 @@ class AgenticLoop:
         self.tool_router = tool_router
         self.reflection = reflection
         self.max_steps = max_steps
+        self.prompt_cache = PromptCache()
 
     async def run(
         self,
@@ -45,13 +47,18 @@ class AgenticLoop:
         session: Optional[Dict[str, Any]] = None,
         checkpoint: Optional[CheckpointFn] = None,
     ) -> Dict[str, Any]:
+        provider_id = provider_config["provider"]
+        system_prompt = self.prompt_cache.get_or_build_prompt(self._system_prompt)
+        tools = self.prompt_cache.get_or_build_tools(agentic_tool_definitions)
+        tools_for_provider = self.prompt_cache.get_tools_for_provider(tools, provider=provider_id)
+
         messages: List[Dict[str, Any]] = list((session or {}).get("messages") or [])
         if not messages:
+            system_message = self.prompt_cache.get_system_message(system_prompt, provider=provider_id)
             messages = [
-                {"role": "system", "content": self._system_prompt()},
+                system_message,
                 {"role": "user", "content": state["inputs"].get("text") or state["inputs"].get("prompt") or ""},
             ]
-        tools = agentic_tool_definitions()
         start_step = int((session or {}).get("step") or 0)
 
         for step in range(start_step + 1, start_step + self.max_steps + 1):
@@ -64,15 +71,15 @@ class AgenticLoop:
                 {
                     "request_id": state["request_id"],
                     "step": step,
-                    "summary": f"Calling {provider_config['provider']}:{provider_config['model']}",
+                    "summary": f"Calling {provider_id}:{provider_config['model']}",
                 },
             )
             turn = await self.client.complete(
-                provider=provider_config["provider"],
+                provider=provider_id,
                 api_key=provider_config["api_key"],
                 model=provider_config["model"],
                 messages=messages,
-                tools=tools,
+                tools=tools_for_provider,
                 base_url=provider_config.get("base_url"),
             )
 

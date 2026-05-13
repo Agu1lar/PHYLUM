@@ -170,18 +170,35 @@ class MultiProviderClient:
         base_url: str,
     ) -> AgentTurnResult:
         system, anthropic_messages = self._to_anthropic_messages(messages)
+        anthropic_tools = self._to_anthropic_tools(tools)
+        use_cache = any(
+            isinstance(t, dict) and "cache_control" in t for t in tools
+        )
+        if use_cache:
+            for i, tool in enumerate(anthropic_tools):
+                src = tools[i] if i < len(tools) else {}
+                if isinstance(src, dict) and "cache_control" in src:
+                    tool["cache_control"] = src["cache_control"]
+
         payload: Dict[str, Any] = {
             "model": model,
             "messages": anthropic_messages,
-            "tools": self._to_anthropic_tools(tools),
+            "tools": anthropic_tools,
             "max_tokens": 1024,
         }
         if system:
-            payload["system"] = system
+            system_msg = next((m for m in messages if m.get("role") == "system"), None)
+            anthropic_system = (system_msg or {}).get("_anthropic_system") if system_msg else None
+            if anthropic_system and isinstance(anthropic_system, list):
+                payload["system"] = anthropic_system
+            else:
+                payload["system"] = system
         headers = {
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
         }
+        if use_cache or (isinstance(payload.get("system"), list)):
+            headers["anthropic-beta"] = "prompt-caching-2024-07-31"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(f"{base_url.rstrip('/')}/messages", json=payload, headers=headers)
             response.raise_for_status()

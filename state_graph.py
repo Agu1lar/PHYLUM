@@ -201,6 +201,13 @@ class GraphTraversalLog:
                 return entry["node_id"]
         return None
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {"entries": self.entries, "visited": self.visited_nodes}
+
+    def to_serializable(self) -> Dict[str, Any]:
+        """Return a plain dict for JSON serialization."""
+        return self.to_dict()
+
 
 class GraphExecutor:
     """Executes a compiled StateGraph by walking nodes and evaluating edge conditions."""
@@ -326,5 +333,17 @@ class GraphExecutor:
                 last_plan = traversal.find_last_of_type(NodeType.PLANNER.value)
                 if last_plan:
                     return last_plan
+
+        entries = state.get("_graph", {}).get("traversal_entries")
+        if entries and isinstance(entries, list):
+            classification = recovery_classification.get("classification", "")
+            if classification in ("retryable", "script_recovery"):
+                for entry in reversed(entries):
+                    if entry.get("node_type") == NodeType.EXECUTOR.value:
+                        return entry["node_id"]
+            if classification == "replan_required":
+                for entry in reversed(entries):
+                    if entry.get("node_type") == NodeType.PLANNER.value:
+                        return entry["node_id"]
 
         return None

@@ -89,8 +89,12 @@ class StrategyMemory:
     KV_PREFIX = "strategy:"
     FAILED_PREFIX = "strategy_failed:"
 
-    def __init__(self, persistence: Optional[Persistence] = None):
+    def __init__(self, persistence: Optional[Persistence] = None, *, semantic_index=None):
         self.persistence = persistence or Persistence.get()
+        self._semantic_index = semantic_index
+
+    def set_semantic_index(self, index) -> None:
+        self._semantic_index = index
 
     def _storage_key(self, goal_type: str, strategy_id: str) -> str:
         return f"{self.KV_PREFIX}{goal_type}:{strategy_id}"
@@ -120,6 +124,7 @@ class StrategyMemory:
             if duration_ms:
                 record.duration_ms = duration_ms
             await self.persistence.save_kv(storage_key, record.to_dict())
+            await self._index_strategy(record)
             return record
 
         record = StrategyRecord(
@@ -133,6 +138,7 @@ class StrategyMemory:
             duration_ms=duration_ms,
         )
         await self.persistence.save_kv(storage_key, record.to_dict())
+        await self._index_strategy(record)
         await self._trim_strategies(goal_type)
         return record
 
@@ -162,6 +168,45 @@ class StrategyMemory:
         storage_key = self._failed_key(goal_type, approach_hash)
         await self.persistence.save_kv(storage_key, failed_record)
         return failed_record
+
+    async def _index_strategy(self, record: StrategyRecord) -> None:
+        if self._semantic_index is None:
+            return
+        try:
+            await self._semantic_index.upsert_strategy(
+                record.goal_type,
+                record.strategy_id,
+                record.goal_summary,
+                record.to_dict(),
+            )
+        except Exception:
+            logger.debug("Failed to index strategy %s:%s", record.goal_type, record.strategy_id, exc_info=True)
+
+    async def semantic_search(
+        self,
+        query: str,
+        *,
+        goal_type: Optional[str] = None,
+        limit: int = 5,
+        min_score: float = 0.1,
+    ) -> List[Dict[str, Any]]:
+        """Semantic vector search across strategies. Falls back to typed search if no index."""
+        if self._semantic_index is not None:
+            try:
+                return await self._semantic_index.search_strategies(
+                    query,
+                    goal_type=goal_type,
+                    limit=limit,
+                    min_score=min_score,
+                )
+            except Exception:
+                logger.debug("Semantic strategy search failed, falling back", exc_info=True)
+
+        if goal_type:
+            results = await self.find_strategies(goal_type, query=query, limit=limit)
+        else:
+            results = []
+        return [r.to_dict() for r in results]
 
     async def find_strategies(
         self,

@@ -135,8 +135,12 @@ class WorldEntity:
 class WorldModel:
     KV_PREFIX = "world2:"
 
-    def __init__(self, persistence: Optional[Persistence] = None):
+    def __init__(self, persistence: Optional[Persistence] = None, *, semantic_index=None):
         self.persistence = persistence or Persistence.get()
+        self._semantic_index = semantic_index
+
+    def set_semantic_index(self, index) -> None:
+        self._semantic_index = index
 
     def _storage_key(self, entity_type: str, key: str) -> str:
         return f"{self.KV_PREFIX}{entity_type}:{key}"
@@ -173,6 +177,7 @@ class WorldModel:
                 existing.app_context = app_context
             existing.hit_count += 1
             await self.persistence.save_kv(storage_key, existing.to_dict())
+            await self._index_entity(existing)
             return existing
 
         if ttl_seconds:
@@ -191,6 +196,7 @@ class WorldModel:
             app_context=app_context,
         )
         await self.persistence.save_kv(storage_key, entity.to_dict())
+        await self._index_entity(entity)
         return entity
 
     async def get(self, entity_type: str, key: str, *, record_hit: bool = True) -> Optional[WorldEntity]:
@@ -294,6 +300,51 @@ class WorldModel:
             limit=1,
         )
         return results[0] if results else None
+
+    async def _index_entity(self, entity: WorldEntity) -> None:
+        if self._semantic_index is None:
+            return
+        try:
+            await self._semantic_index.upsert_entity(
+                entity.entity_type,
+                entity.key,
+                entity.value,
+                confidence=entity.confidence,
+                tags=entity.tags,
+                app_context=entity.app_context,
+            )
+        except Exception:
+            logger.debug("Failed to index entity %s:%s", entity.entity_type, entity.key, exc_info=True)
+
+    async def semantic_search(
+        self,
+        query: str,
+        *,
+        entity_type: Optional[str] = None,
+        app_context: Optional[str] = None,
+        limit: int = 10,
+        min_score: float = 0.1,
+    ) -> List[Dict[str, Any]]:
+        """Semantic vector search across entities. Falls back to typed query if no index."""
+        if self._semantic_index is not None:
+            try:
+                return await self._semantic_index.search_entities(
+                    query,
+                    entity_type=entity_type,
+                    app_context=app_context,
+                    limit=limit,
+                    min_score=min_score,
+                )
+            except Exception:
+                logger.debug("Semantic search failed, falling back to typed query", exc_info=True)
+
+        entities = await self.query(
+            entity_type or "share",
+            query=query,
+            app_context=app_context,
+            limit=limit,
+        )
+        return [e.to_dict() for e in entities]
 
     # --- Domain-specific convenience methods ---
 

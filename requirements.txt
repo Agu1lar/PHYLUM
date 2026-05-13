@@ -16,3 +16,4 @@ extract-msg
 pillow
 pytesseract
 pymupdf
+lancedb

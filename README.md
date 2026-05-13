@@ -1,166 +1,293 @@
 # Agente Desktop
 
-`Agente Desktop` e um runtime local para automacao operacional no Windows orientada por linguagem natural.
-O projeto combina backend `FastAPI`, frontend `React/Vite` com `WebSocket` em tempo real e um runtime agentic com:
+Runtime local para automacao operacional no Windows orientada por linguagem natural.
 
-- `planner -> safety -> tool router -> reflection`
-- loop `agentic` com provider LLM
-- handoff humano real com `pause -> reply -> resume`
-- approvals por efeito real da acao
-- persistencia local de runs, approvals, checkpoints e contexto operacional
+Backend **FastAPI** + frontend **React/Vite** com **WebSocket** em tempo real + runtime agentico com planejamento, execucao, recuperacao e aprendizado contínuo.
 
-O foco do projeto e `Windows local-first`, priorizando APIs nativas e automacao sem pixel automation.
+Foco: **Windows local-first**, priorizando APIs nativas e automacao sem pixel automation.
 
-## Estado atual
+---
 
-Hoje o sistema ja nao e apenas um `tool runner com UI`.
-Ele ja possui:
+## Visao geral
 
-- runtime duravel com `cancel`, `pause`, `resume`, reidratacao e retomada de runs
-- superficie canonica de tools compartilhada por planner, runtime, API e UI
-- modo `API-first`: com provider configurado, o caminho principal e agentic; sem provider, o sistema entra em `manual assist`
-- policy orientada a efeito, com approvals concentrados em mutacoes reais
-- discovery operacional para janelas, processos, apps, Explorer, drives e shares
-- UI Automation nativa inicial via `pywinauto`
-- UI Automation com selector healing, anchors compostos, ranking de ambiguidades e memoria local de seletores por app/versao
-- discovery documental com OCR opcional, indexacao local, filtros de metadados e classificacao de contratos/notas fiscais/emails/anexos
-- adapters Office via COM para Word, Excel e Outlook
-- memoria operacional tipada e checkpoints de autonomia
-- world model tipado com entidades de confianca, expiracao (TTL) e decay automatico
-- memoria de shares descobertos, aliases de documentos, caminhos de apps e seletores UI
-- historico de estrategia bem-sucedida por tipo de objetivo com reaproveitamento automatico
-- reaproveitamento automatico de seletores, caminhos e candidatos validos entre runs
-- sandbox de execucao dinamica (Python/PowerShell) com isolamento, timeout e coleta de artefatos
-- processamento interno de artefatos (text, CSV, JSON, PDF, DOCX, XLSX, MSG) sem abrir no desktop
-- auto-criacao e persistencia de micro-ferramentas dinamicas reutilizaveis entre runs
-- planejamento dinamico multi-step com fallback proativo via sandbox e dynamic tools
-- daemon local sempre ativo com polling de fila, promocao de goals diferidos e recuperacao de stale
-- fila duravel de objetivos com prioridade, retry automatico, scheduling e hierarquia de goals
-- sessoes duraveis por objetivo e workspace com checkpoint, fases, contexto acumulado e expiracao
-- jobs de longa duracao com checkpoint real e retomada automatica apos restart
-- decomposicao de objetivos complexos em fases ordenadas com dependencias
-- decisao autonoma entre processamento interno (artifact/sandbox) e desktop (apps nativos, UI, Office COM)
-- recuperacao inteligente de falhas com geracao automatica de scripts alternativos
-- preenchimento autonomo de lacunas de tools via sandbox scripts e dynamic tools
-- orquestracao de tarefas multi-fonte com scripts gerados em tempo real (emails + planilha + relatorio)
+O Agente Desktop e um sistema de automacao que recebe instrucoes em linguagem natural e as executa no ambiente Windows do usuario. Ele nao e um simples "tool runner" — e um runtime agentico completo que planeja, executa, reflete, se recupera de falhas e aprende com experiencias anteriores.
+
+O agente opera com um ciclo cognitivo:
+
+```
+planner -> safety -> tool router -> execution -> reflection -> recovery (se necessario)
+```
+
+Todo o ciclo e executado como um **grafo de estados dirigido** com 13 tipos de nos e transicoes condicionais, permitindo recuperacao precisa para o no exato onde uma falha ocorreu.
+
+---
+
+## Stack tecnologica
+
+| Camada | Tecnologias |
+|---|---|
+| Backend | Python 3.11+, FastAPI, Uvicorn, aiosqlite |
+| Frontend | React, Vite, WebSocket |
+| LLM Integration | Multi-provider (OpenAI, Anthropic, Gemini), tool-calling nativo |
+| Automacao Windows | pywinauto, pywin32, WMI, win32com (COM) |
+| Automacao Web | Playwright |
+| Processamento de docs | pypdf, PyMuPDF, python-docx, openpyxl, extract-msg, Pillow, pytesseract |
+| Persistencia | SQLite (via aiosqlite), JSON KV store |
+| Vector DB | LanceDB (embedded, serverless) |
+| Validacao | Pydantic |
+| Testes | pytest, pytest-asyncio (420+ testes) |
+
+---
 
 ## Arquitetura
 
-Fluxo principal:
+### Fluxo principal
 
-1. O usuario envia uma instrucao pela UI ou pela API.
-2. O `RuntimeManager` cria a run e persiste o estado inicial.
-3. O `AgenticLoop` ou o parser de fallback propõem tasks usando o mesmo catalogo canonico.
-4. O `SafetyNode` classifica risco e decide entre `allow`, `require_approval` ou `deny`.
-5. O `ToolRouterNode` executa a tool real.
-6. O `ReflectionNode` gera um resumo semantico da acao.
-7. O `RecoveryEngine` decide entre retry, handoff humano, replanning ou falha terminal.
-8. Eventos de run/task/approval/handoff/recovery sao enviados por `WebSocket` para a UI.
+1. O usuario envia uma instrucao pela UI ou API
+2. O **RuntimeManager** cria a run e persiste o estado inicial
+3. O **PlannerAgent** decompoe a instrucao em tasks usando o catalogo canonico (ou fases ordenadas para goals complexos)
+4. O **SafetyNode** classifica risco e decide: `allow`, `require_approval` ou `deny`
+5. O **ToolRouterNode** executa a tool real
+6. O **ReflectionNode** gera um resumo semantico da acao
+7. O **RecoveryEngine** decide: retry, handoff humano, replanning, script alternativo ou falha terminal
+8. O **ExecutionStrategy** pode redirecionar tasks entre processamento interno e desktop automaticamente
+9. Eventos de run/task/approval/handoff/recovery sao emitidos por WebSocket para a UI em tempo real
 
-Arquivos centrais:
+### Grafo de estados
 
-- `app_main.py`
-- `runtime_manager.py`
-- `agentic_loop.py`
-- `action_executor.py`
-- `recovery_engine.py`
-- `canonical_tools.py`
-- `tool_registry.py`
-- `sandbox_executor.py`
-- `artifact_processor.py`
-- `dynamic_tool_creator.py`
-- `world_model.py`
-- `strategy_memory.py`
-- `durable_queue.py`
-- `session_manager.py`
-- `execution_strategy.py`
-- `state_graph.py`
-- `graph_definitions.py`
-- `selector_healing.py`
+Cada pipeline do runtime e modelado como um grafo dirigido:
 
-## Superficie operacional atual
+| Tipo de no | Funcao |
+|---|---|
+| `entry` | Ponto de entrada |
+| `planner` | Decomposicao de tasks |
+| `safety` | Classificacao de risco |
+| `approval` | Gate de aprovacao humana |
+| `executor` | Execucao de tool |
+| `reflection` | Analise de resultado |
+| `recovery` | Classificacao de falha |
+| `script_recovery` | Fallback via sandbox |
+| `checkpoint` | Persistencia de progresso |
+| `handoff` | Transferencia para humano |
+| `complete` / `fail` | Estados terminais |
 
-Hoje o catalogo canonico inclui:
+Tres topologias de grafo compiladas: **agentic** (LLM-driven), **local_heuristic** (regras locais) e **manual_assist** (plan-and-present).
 
-- `shell`
-- `filesystem`
-- `memory`
-- `browser`
-- `web`
-- `package_manager`
-- `software_inventory`
-- `env_manager`
-- `driver_manager`
-- `os`
-- `desktop`
-- `windows_ui`
-- `share_discovery`
-- `document_intelligence`
-- `office`
-- `sandbox`
-- `artifact`
-- `dynamic_tool`
+### Arquivos centrais
 
-### Capabilities principais
+| Arquivo | Responsabilidade |
+|---|---|
+| `app_main.py` | FastAPI app, endpoints REST, daemon lifecycle |
+| `runtime_manager.py` | Orquestracao de runs, pipelines, daemon loop |
+| `agentic_loop.py` | Loop LLM com tool-calling e reflection |
+| `action_executor.py` | Execucao de tasks com recovery |
+| `recovery_engine.py` | Classificacao de falhas, target_node para grafo |
+| `execution_strategy.py` | Decisao autonoma de modo de execucao |
+| `canonical_tools.py` | Catalogo canonico de tools |
+| `tool_registry.py` | Instanciacao e dispatch de tools |
+| `state_graph.py` | Engine de grafo de estados |
+| `graph_definitions.py` | Topologias de grafo por pipeline |
+| `world_model.py` | Entidades tipadas com confianca e TTL |
+| `strategy_memory.py` | Historico de estrategias por tipo de objetivo |
+| `semantic_index.py` | Vector DB para busca semantica |
+| `prompt_cache.py` | Cache de prompt e tools para LLM |
+| `selector_healing.py` | Self-healing de seletores UI |
+| `sandbox_executor.py` | Execucao isolada de Python/PowerShell |
+| `artifact_processor.py` | Processamento interno de arquivos |
+| `dynamic_tool_creator.py` | Criacao de micro-ferramentas em runtime |
+| `durable_queue.py` | Fila duravel de objetivos (SQLite) |
+| `session_manager.py` | Sessoes duraveis por objetivo/workspace |
+| `planner_agent.py` | Planner com decomposicao de goals |
 
-- `desktop`: processos, janelas, Explorer profundo, drives mapeados, instaladores, abrir app/arquivo/pasta, clipboard, notificacoes e servicos
-- `windows_ui`: inspecionar janelas/dialogos, listar elementos, encontrar elemento, esperar elemento, clicar/invocar, preencher texto, selecionar item, hotkeys, scroll e leitura de foco
-- `share_discovery`: mappings SMB, contexto do Explorer e inspecao de shares corporativos
-- `document_intelligence`: inspecao de documentos, extracao de texto, busca por conteudo e documentos recentes
-- `office`: abrir documento, exportar PDF, save-as, buscar texto no Word, ler ranges no Excel, buscar mensagens no Outlook, listar planilhas, criar rascunho de email e revelar path de documento ativo
-- `browser`: Playwright para DOM, navegacao e bridge inicial para dialogos nativos
-- `filesystem`: leitura, escrita, busca, copy/move, organizacao e undo
-- `sandbox`: execucao controlada de scripts Python e PowerShell dinamicos em ambiente isolado com timeout, cancelamento e coleta de artefatos
-- `artifact`: carregamento, leitura, transformacao e analise de arquivos internamente (TXT, CSV, JSON, PDF, DOCX, XLSX, MSG) sem abrir no desktop do usuario
-- `dynamic_tool`: criacao, persistencia e execucao de micro-ferramentas dinamicas durante a run, reutilizaveis entre sessoes
-- `memory` (world model): entidades tipadas (share, app_path, document_alias, selector, path_candidate, device, web_resource, user_preference, environment) com confianca (0-1), TTL/expiracao e decay automatico; domain shortcuts para remember/find shares, apps, aliases, selectors e paths; historico de estrategia por tipo de objetivo (record success/failure, find best strategy, reuse)
+---
 
-## O que o projeto faz hoje
+## Capacidades do sistema
 
-Exemplos praticos do nivel atual:
+### 1. Automacao de desktop Windows
 
-- abrir Word, Explorer, pastas e arquivos locais
-- descobrir drives mapeados e contexto de janelas abertas do Explorer
-- buscar documentos por nome ou por conteudo em formatos comuns
-- operar partes de UI nativa do Windows sem automacao por pixels
-- exportar documentos Office para PDF
-- pausar uma investigacao, pedir contexto ao usuario e retomar do ponto certo
-- registrar observacoes, hipoteses, subobjetivos e verificacoes de meta durante a run
-- executar scripts Python ou PowerShell dinamicos em sandbox controlado para resolver problemas sob demanda
-- carregar e processar arquivos internamente (CSV, JSON, PDF, DOCX, XLSX, MSG) sem abrir no desktop
-- criar micro-ferramentas dinamicas durante a run para cenarios nao previstos nas tools nativas
-- decompor tarefas complexas multi-step que misturam navegacao, manipulacao de arquivos e extracao de dados
-- persistir automaticamente shares, apps, seletores e caminhos descobertos no world model para reutilizacao futura
-- consultar estrategias bem-sucedidas anteriores antes de executar tarefas complexas
-- reaproveitar seletores UI, caminhos de rede e localizacoes de apps de runs anteriores sem re-discovery
-- enfileirar objetivos com prioridade, retry automatico e agendamento futuro em fila duravel SQLite
-- operar com daemon sempre ativo que processa a fila de goals, promove goals diferidos e recupera goals travados
-- manter sessoes duraveis por objetivo e workspace que sobrevivem restart e acumulam contexto entre runs
-- retomar jobs de longa duracao do ultimo checkpoint real apos crash ou restart do backend
-- decompor automaticamente objetivos complexos em fases ordenadas com dependencias inter-fase
-- decidir autonomamente quando processar dados internamente (artifact/sandbox) vs. usar apps nativos do desktop
-- receber tarefas complexas multi-fonte (ex: "leia emails, cruze com planilha, crie relatorio") e resolver com scripts gerados em tempo real
-- contornar a ausencia de tools especificas gerando scripts de automacao ou analise sob demanda
-- recuperar automaticamente de falhas operacionais criando abordagens ou scripts alternativos quando o caminho primario falha
-- executar pipelines como grafos de estado (state graph) em vez de loops lineares, permitindo recovery preciso para o no exato do grafo onde a falha ocorreu
-- curar automaticamente seletores UI quebrados usando o World Model: quando pywinauto nao encontra um botao/elemento, o agente busca candidatos similares no World Model, tenta na UI ao vivo e, se funcionar, atualiza o seletor com confianca renovada
+- **Gerenciamento de processos e janelas**: listar, abrir, fechar, trazer ao foco
+- **Explorer profundo**: drives mapeados, pastas, contexto de janelas abertas
+- **UI Automation nativa** via pywinauto: inspecionar, clicar, preencher, selecionar, scroll, hotkeys, esperar elementos
+- **Selector healing automatico**: quando um seletor UI falha, o agente busca candidatos similares no World Model, testa na UI ao vivo e atualiza com confianca renovada
+- **Office COM adapters**: Word (abrir, buscar texto, exportar PDF, save-as), Excel (ler ranges, listar planilhas), Outlook (buscar mensagens, criar rascunho)
+- **Discovery operacional**: aplicativos instalados, servicos, shares SMB, clipboard, notificacoes
 
-## O que o projeto ainda nao e
+### 2. Processamento de documentos e artefatos
 
-Apesar do salto recente, o sistema ainda nao esta no mesmo nivel operacional de um OpenClaw maduro.
-Ele ja entrou na categoria certa, mas ainda faltam camadas de robustez para chegar em `OpenClaw-level ou acima`.
+- **Processamento interno** sem abrir no desktop: TXT, CSV, JSON, PDF, DOCX, XLSX, MSG
+- **Extracao de texto** com OCR opcional (pytesseract + PyMuPDF)
+- **Discovery documental**: busca por nome ou conteudo, filtros de metadados
+- **Classificacao**: contratos, notas fiscais, emails, anexos
+- **Indexacao local** para consultas recorrentes
 
-Os gaps principais restantes sao:
+### 3. Execucao dinamica de codigo
 
-- mais adapters de dominio para fluxos reais do dia a dia
-- testes end-to-end em cenarios reais com providers LLM configurados
-- hardening de sandbox e governanca para operacao completamente autonoma em producao
+- **Sandbox isolado** para Python e PowerShell com timeout, cancelamento e coleta de artefatos
+- **Scripts gerados em tempo real** para resolver problemas nao previstos
+- **Orquestracao multi-fonte**: um unico script pode ler emails (Outlook COM), cruzar com planilha (openpyxl), e gerar relatorio
+- **Auto-criacao de micro-tools**: ferramentas persistidas em disco e reutilizaveis entre runs
+- **Recuperacao por script alternativo**: quando Office COM falha, gera script openpyxl; quando browser falha, gera script urllib
+
+### 4. Navegacao web
+
+- **Playwright** para DOM, navegacao e interacao
+- Bridge para dialogos nativos disparados pelo browser
+
+### 5. Planejamento inteligente
+
+- **Decomposicao multi-step**: tarefas complexas viram sequencias de sub-tasks
+- **Decomposicao multi-fase**: goals complexos sao divididos em fases ordenadas com dependencias
+- **Decisao autonoma**: o agente decide automaticamente entre processamento interno (artifact/sandbox) e desktop (apps nativos, UI, Office COM)
+- **Preenchimento de lacunas**: tools inexistentes sao contornadas com sandbox scripts ou dynamic tools
+- **Fallback proativo**: se o caminho primario falha, o agente gera abordagens alternativas automaticamente
+
+### 6. Memoria e aprendizado
+
+- **World Model tipado** com 9 tipos de entidade: share, app_path, document_alias, selector, path_candidate, device, web_resource, user_preference, environment
+- **Confianca com decay temporal**: cada entidade tem score 0.0-1.0 que decai 0.05/dia, com TTL/expiracao por tipo
+- **Strategy Memory**: registra sequencias de tool calls bem-sucedidas por tipo de objetivo, com confidence, used_count e context_tags
+- **Busca semantica** via Vector DB local (LanceDB): encontra estrategias e entidades por similaridade semantica, nao apenas substring
+- **Reaproveitamento automatico**: seletores UI, caminhos de rede, localizacoes de apps e estrategias anteriores sao reutilizados sem re-discovery
+- **Auto-persistencia**: toda discovery (shares, apps, selectors) e automaticamente salva no world model
+
+### 7. Runtime duravel
+
+- **Daemon always-on**: loop a cada 5s processando fila de goals, promovendo diferidos, recuperando travados
+- **Fila duravel** (SQLite): prioridade, retry automatico, scheduling, hierarquia de goals, workspaces
+- **Sessoes duraveis** por objetivo e workspace: checkpoint, fases, contexto acumulado, expiracao
+- **Job checkpoints**: snapshots de estado para retomada apos crash ou restart
+- **Concorrencia**: ate 3 runs simultaneos processados pelo daemon
+- **Lifecycle completo**: queued → running → completed/failed/cancelled/retrying/deferred
+
+### 8. Controle e seguranca
+
+- **Handoff humano real**: pause → reply → resume com contexto preservado
+- **Approvals por efeito**: mutacoes reais exigem aprovacao, discovery e reads sao permitidos
+- **Safety classification**: cada acao e classificada em allow/require_approval/deny
+- **Cancel real**: runs podem ser canceladas mid-execution com cleanup
+
+### 9. Otimizacoes de performance
+
+- **Prompt caching**: system prompt (~3000+ tokens) e tool definitions (~35+ tools) cacheados in-process entre steps
+- **Anthropic prompt caching nativo**: cache_control=ephemeral para cache server-side do provider
+- **Provider-aware**: zero overhead de caching para providers sem suporte
+- **Feature hashing local**: embeddings de 128 dimensoes sem API externa para busca semantica
+
+---
+
+## Catalogo de tools
+
+O catalogo canonico compartilhado por planner, runtime, API e UI:
+
+| Tool | Acoes |
+|---|---|
+| `shell` | Execucao de comandos |
+| `filesystem` | Leitura, escrita, busca, copy/move, organizacao, undo |
+| `memory` | World model + strategy memory (30+ acoes) + busca semantica |
+| `browser` | Playwright para DOM e navegacao |
+| `web` | Requisicoes HTTP |
+| `package_manager` | Gerenciamento de pacotes |
+| `software_inventory` | Inventario de software instalado |
+| `env_manager` | Variaveis de ambiente |
+| `driver_manager` | Drivers de dispositivos |
+| `os` | Operacoes de sistema |
+| `desktop` | Processos, janelas, Explorer, drives, clipboard, servicos |
+| `windows_ui` | Inspecao, clique, preenchimento, scroll, hotkeys, espera |
+| `share_discovery` | Shares SMB e contexto do Explorer |
+| `document_intelligence` | Inspecao, extracao, busca documental |
+| `office` | Word, Excel, Outlook via COM |
+| `sandbox` | Execucao de Python/PowerShell em sandbox |
+| `artifact` | Processamento interno de arquivos |
+| `dynamic_tool` | Criacao e execucao de micro-tools |
+
+---
+
+## Exemplos de uso
+
+O que o sistema consegue fazer hoje:
+
+- "Abra o Word e exporte o documento X para PDF"
+- "Descubra todos os drives mapeados e liste os compartilhamentos de rede"
+- "Busque documentos que mencionem 'contrato de servico' e me de um resumo"
+- "Leia a planilha de vendas, cruze com os emails do Outlook e gere um relatorio"
+- "Instale a impressora de rede HP do escritorio"
+- "Configure o caminho do aplicativo X no sistema"
+- "Me de um resumo dos ultimos 10 emails do Outlook sobre o projeto Y"
+- "Crie um script que organize os arquivos da pasta Downloads por tipo e data"
+- "Investigue por que a impressora nao esta funcionando" (com pause para pedir contexto)
+- "Processe este CSV de 50mil linhas e me de as top 10 categorias por receita"
+
+---
+
+## Tratamentos e nuances
+
+### Recovery inteligente
+
+O `RecoveryEngine` nao apenas classifica erros — ele resolve. Cada falha gera uma classificacao com `target_node` indicando para onde o grafo deve retornar:
+
+- **retry** → volta ao `executor` com a mesma task
+- **replan** → volta ao `planner` para gerar nova abordagem
+- **script_recovery** → vai ao `script_recovery` para executar script alternativo
+- **ask_user** → vai ao `handoff` para transferir ao humano
+- **stop** → vai ao `fail` como estado terminal
+
+Quando Office COM falha, scripts openpyxl/python-docx sao gerados automaticamente. Quando filesystem falha, scripts os/shutil substituem. Quando browser falha, scripts urllib/requests contornam.
+
+### Selector healing
+
+UI automation e inerentemente fragil — seletores quebram com atualizacoes de software. O sistema trata isso com self-healing:
+
+1. pywinauto falha em encontrar o elemento
+2. O healer busca candidatos similares no World Model (por app_context + fuzzy similarity)
+3. Candidatos sao testados contra a UI ao vivo
+4. Se funcionar, o seletor original e atualizado com confianca renovada
+5. Um alias e criado para o intent do seletor falho
+
+Thresholds configuraveis: `HEAL_MIN_SCORE=0.60`, `HEAL_CONFIDENCE_ON_SUCCESS=0.90`, `HEAL_CONFIDENCE_BOOST=0.15`.
+
+### Decisao autonoma de modo de execucao
+
+O `ExecutionStrategy` analisa cada task e decide transparentemente:
+
+- **internal**: dados que podem ser processados em memoria (CSV, JSON, texto)
+- **desktop**: interacao visual necessaria (clicar, arrastar, preencher formularios)
+- **script**: melhor resolvido com um script sob medida
+- **native**: deve usar a tool nativa diretamente
+
+Office COM reads (excel_read_range, outlook_search_messages) sao redirecionados para sandbox/artifact quando o objetivo e leitura, nao interacao visual.
+
+### Persistencia e durabilidade
+
+O sistema sobrevive crashes e restarts:
+
+- Fila de goals persiste em SQLite
+- Sessoes acumulam contexto entre runs
+- Job checkpoints capturam snapshots de estado completo
+- O daemon recupera goals travados (stale > 600s)
+- Checkpoints sao deletados apos estados terminais
+
+### Busca semantica vs. tipada
+
+O World Model e Strategy Memory operam em duas camadas de busca:
+
+- **Tipada** (substring): `find_strategies("install_printer")` busca por substring exata
+- **Semantica** (vetorial): `semantic_search("setup printing device")` encontra "install network printer driver" por similaridade de embeddings
+
+O Vector DB (LanceDB) usa feature hashing local (128 dim, cosine metric) — zero dependencia de API externa, funciona 100% offline.
+
+### Prompt caching
+
+Em um agentic loop de 16 steps, o system prompt (~3000+ tokens) e tool definitions (~35 tools) eram reconstruidos 16 vezes. Com o cache:
+
+- Construidos **1 vez**, reutilizados **15 vezes**
+- Para Anthropic: `cache_control=ephemeral` ativa cache server-side
+- Para outros providers: zero overhead
+
+---
 
 ## Execucao rapida
 
 ### Backend
-
-Windows PowerShell:
 
 ```powershell
 python -m venv .venv
@@ -184,208 +311,132 @@ npm run dev
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-## Diagnostics
-
-O backend expoe endpoints para verificar a prontidao operacional do ambiente:
-- operacao sempre ativa mais robusta, com filas duraveis, jobs longos e retomada mais agressiva
-
-## Execucao rapida
-
-### Backend
-
-Windows PowerShell:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m playwright install --with-deps
-.\.venv\Scripts\python.exe -m uvicorn app_main:app --reload
-```
-
-### Frontend
-
-```powershell
-cd frontend
-npm install
-npm run dev
-```
-
-### Testes
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-```
+---
 
 ## Diagnostics
 
-O backend expoe endpoints para verificar a prontidao operacional do ambiente:
+O backend expoe endpoints para verificar prontidao operacional:
 
-- `GET /health`
-- `GET /tools`
-- `GET /diagnostics/doctor`
-- `GET /onboarding/capabilities`
+| Endpoint | Funcao |
+|---|---|
+| `GET /health` | Saude geral do sistema |
+| `GET /tools` | Lista de tools disponiveis |
+| `GET /diagnostics/doctor` | Diagnostico completo do ambiente |
+| `GET /onboarding/capabilities` | Capacidades detectadas |
+| `GET /daemon/status` | Estado do daemon loop |
+| `GET /goals` | Lista de goals na fila |
+| `GET /sessions` | Sessoes ativas |
 
-Esses endpoints ajudam a validar:
+---
 
-- providers configurados
-- disponibilidade de `pywinauto`
-- disponibilidade de `win32com`
-- disponibilidade dos parsers documentais
-- presenca do instalador desktop
+## Cobertura de testes
 
-## Roadmap futuro: Rumo à Autonomia Plena (Nível Agente)
+**420+ testes** organizados por componente:
 
-Esta secao registra as proximas atualizacoes planejadas para levar o projeto alem de um "OpenClaw", alcancando um grau de **autonomia de agente via linguagem natural**. 
+| Suite | Testes | Cobertura |
+|---|---|---|
+| `test_phase1_sandbox.py` | 33 | Sandbox executor, artifact processor, dynamic tools |
+| `test_phase2_world_model.py` | 63 | WorldEntity, WorldModel, StrategyRecord, StrategyMemory, MemoryTool |
+| `test_phase3_runtime.py` | 41 | DurableQueue, SessionManager, job checkpoints, goal decomposition |
+| `test_phase4_autonomy.py` | 52 | ExecutionStrategy, script recovery, orchestration, tool gaps |
+| `test_state_graph.py` | 51 | GraphNode, GraphEdge, StateGraph, GraphExecutor, recovery targets |
+| `test_selector_healing.py` | 32 | SelectorHealer, similarity, WorldModel integration, end-to-end |
+| `test_prompt_cache.py` | 33 | PromptCache, CacheStats, Anthropic integration, lifecycle |
+| `test_semantic_index.py` | 31 | Embeddings, LanceDB, semantic search, cross-domain matching |
+| Outros | 84+ | Runtime, providers, shell, filesystem, network, planner, reflection |
 
-A nova visao estabelece que o sistema nao deve ficar engessado as tools atuais. As tools servem apenas como "facilitadores de caminho". O agente deve ser capaz de planejar e executar acoes por conta propria. Por exemplo, se o usuario pedir algo sobre um arquivo, o agente pode decidir baixa-lo, processa-lo internamente e devolver apenas a resposta (ou abrir o resultado), sem precisar desenvolver um projeto na maquina do usuario para tal fim ou ficar restrito a uma tool especifica.
+---
 
-### Fase 1 - Code Execution e Resolucao Proativa ✅ Concluido
+## Roadmap futuro
 
-- **Sandbox de Execucao** ✅: Capacidade de criar e executar scripts dinamicos (Python, PowerShell) em ambiente controlado localmente para resolver problemas sob demanda (ex: analisar um arquivo customizado, formatar dados complexos, ou automatizar uma acao que a tool padrao nao alcanca). Implementado em `sandbox_executor.py` e `tool_sandbox.py`.
-- **Processamento Interno de Artefatos** ✅: Se o usuario solicitar a leitura ou transformacao de um arquivo, a IA pode baixar/carregar o arquivo em sua memoria interna, processar e devolver o resultado final sem delegar o trabalho de volta para o sistema do usuario. Suporta TXT, CSV, JSON, PDF, DOCX, XLSX, MSG. Implementado em `artifact_processor.py` e `tool_artifact.py`.
-- **Auto-criacao de Tools** ✅: O agente pode escrever e persistir "micro-ferramentas" dinamicas durante a run para lidar com novos cenarios nao previstos nas tools nativas. Micro-tools sao persistidas em disco e reutilizaveis entre runs. Implementado em `dynamic_tool_creator.py` e `tool_dynamic.py`.
-- **Raciocinio de Longo Prazo e Planejamento Dinamico** ✅: Capacidade do Planner de desmembrar tarefas complexas que misturam navegacao web, manipulacao de arquivos locais e extracao de dados em multiplos passos autonomos. System prompt do AgenticLoop atualizado com instrucoes de decomposicao multi-step e fallback via sandbox/dynamic tools.
+### Proximas evolucoes
 
-### Fase 2 - World model mais forte ✅ Concluido
+#### Governanca arquitetural
 
-- **Entidades tipadas com confianca e expiracao** ✅: World model com 9 tipos de entidade (share, app_path, document_alias, selector, path_candidate, device, web_resource, user_preference, environment), cada uma com confidence score (0.0-1.0), decay temporal automatico (0.05/dia), TTL/expiracao configuravel por tipo e hit counter. Implementado em `world_model.py`.
-- **Memoria de shares descobertos, aliases de documentos e caminhos de apps** ✅: Domain-specific stores com metodos de conveniencia (remember_share, remember_app_path, remember_document_alias, remember_selector, remember_path_candidate) e lookups rapidos (find_share, find_app_path, etc.). Auto-persistencia de discoveries no runtime (shares, apps, selectors) via `runtime_manager.py`. Integrado em `tool_memory.py` com 30+ novas acoes.
-- **Historico de estrategia bem-sucedida por objetivo** ✅: Strategy memory que registra sequencias de tool calls bem-sucedidas por goal_type, com confidence, used_count, context_tags e duration. Suporta record_success, record_failure, find_strategies, best_strategy e mark_reused. Estrategias com mais usos e maior confianca sao priorizadas. Implementado em `strategy_memory.py`.
-- **Reaproveitamento automatico de seletores, caminhos e candidatos validos** ✅: System prompt do AgenticLoop instrui o LLM a consultar o world model antes de re-descobrir (world_find_*), persistir apos discovery bem-sucedido (world_remember_*), e reforcar com world_touch apos reuso. Runtime auto-persiste discoveries de shares, apps e selectors no checkpoint flow. Planner atualizado com 35+ keywords para acoes do world model e strategy memory.
+O sistema ja possui ~20 modulos com responsabilidades distintas. O maior risco e complexidade descontrolada.
 
-### Fase 3 - Runtime sempre ativo e Planejamento de Longo Prazo ✅ Concluido
+- [ ] Contratos claros entre camadas (interfaces, nao implementacoes)
+- [ ] Boundaries explicitos entre modulos com testes de contrato
+- [ ] Invariantes arquiteturais documentados e enforced por CI
 
-- **Daemon local robusto** ✅: RuntimeManager agora inicia um daemon loop no startup que roda a cada 5s, promovendo goals diferidos/retrying para queued, recuperando goals stuck em running (stale_seconds=600), retomando jobs com checkpoint pendente e processando a fila de goals com ate 3 runs concorrentes. O daemon para graciosamente no shutdown. API /daemon/status expoe estado do daemon.
-- **Fila duravel de objetivos** ✅: DurableQueue implementa uma fila SQLite-backed com prioridade, retry automatico (max_retries + retry_delay_seconds), scheduling via scheduled_at, hierarquia de goals (parent_goal_id), workspaces, e lifecycle completo (queued -> running -> completed/failed/cancelled/retrying/deferred). APIs REST em /goals para enqueue, list, get e cancel. Cleanup automatico de goals antigos.
-- **Jobs de longa duracao com retomada real** ✅: Job checkpoints sao salvos automaticamente no _checkpoint_agent_session contendo agent_session, autonomy, runtime_context e progresso de tasks. Tabela job_checkpoints no SQLite com state_snapshot, step_index, total_steps e flag resumable. O daemon detecta checkpoints resumable e re-lanca pipelines com resume=True, restaurando o estado completo do agente. Checkpoint deletado apos terminal state.
-- **Sessoes duraveis por objetivo e workspace** ✅: SessionManager implementa sessoes SQLite-backed com objective, workspace, fases ordenadas (com advance_phase), contexto acumulado (merge_context), checkpoint incremental, run_ids/goal_ids, TTL/expires_at e status lifecycle (active/paused/completed/failed/expired). find_or_create_session permite reutilizar sessoes ativas. submit_run_with_session vincula automaticamente runs a sessoes. APIs REST em /sessions para create, list, get, close, checkpoint. Expiracao automatica de sessoes inativas pelo daemon.
+#### Event bus explicito
 
-### Fase 4 - Release gates de Agente Autonomo ✅ Concluido
+O sistema ja e implicitamente event-driven (retries, replanning, handoffs, approvals, pause/resume). A evolucao natural e um event bus first-class.
 
-- **Tarefas complexas multi-fonte resolvidas com scripts em tempo real** ✅: ExecutionStrategy.generate_orchestration_script gera scripts Python que leem multiplas fontes (Outlook via win32com, Excel via openpyxl, CSV, JSON, texto), cruzam dados e produzem relatorios/exportacoes. O system prompt do AgenticLoop instrui o LLM a preferir um unico sandbox.execute_python para tarefas multi-fonte ao inves de encadear 5+ tool calls separadas. Templates para read_email_outlook, read_excel_data, cross_reference_report e generate_report cobrem os cenarios mais comuns.
-- **Contorno autonomo de ausencia de tools** ✅: ExecutionStrategy.detect_tool_gap identifica tools inexistentes e propoe sandbox scripts como alternativa. O system prompt instrui o LLM a checar dynamic_tool.list primeiro, depois gerar sandbox scripts para preencher lacunas, e usar dynamic_tool.create para necessidades recorrentes. known_gaps cobrem email.read, report.generate e data.cross_reference.
-- **Decisao autonoma interno vs. desktop** ✅: ExecutionStrategy.decide_execution_mode classifica cada task em internal/desktop/script/native. Office COM reads (excel_read_range, outlook_search_messages, word_find_text) sao automaticamente redirecionadas para sandbox/artifact quando o objetivo e leitura de dados, nao interacao visual. Arquivos CSV/JSON/TXT/PDF/DOCX/XLSX sao processados internamente via artifact. RuntimeManager._apply_execution_strategy intercepta tasks no momento da criacao e redireciona transparentemente.
-- **Recuperacao inteligente com scripts alternativos** ✅: RecoveryEngine integra ExecutionStrategy.suggest_script_recovery como fallback antes de declarar falha terminal. Quando Office COM falha, gera script openpyxl/python-docx. Quando browser/Playwright falha, gera script urllib. Quando filesystem falha, gera script os/shutil. ActionExecutor._execute_script_recovery executa o script alternativo automaticamente e, se bem-sucedido, marca a task original como completed sem pedir intervencao do usuario.
+- [ ] Event bus entre componentes (desacoplar orchestration de execution)
+- [ ] State transitions como eventos first-class
+- [ ] Novos consumers sem modificar producers
 
-### Migracao para Grafo de Estados (State Graph) ✅ Concluido
+#### Separacao reasoning / execution
 
-O loop linear de execucao foi substituido por um grafo de estados dirigido, inspirado em LangGraph mas mantendo o runtime proprio. Cada pipeline do RuntimeManager (agentic, local_heuristic, manual_assist) possui um grafo compilado com nos tipados e arestas condicionais.
+Hoje reasoning e execution estao relativamente acoplados. A arquitetura alvo:
 
-- **State Graph Engine** ✅: `state_graph.py` implementa o motor de execucao de grafos. GraphNode (13 tipos: entry, planner, router, safety, approval, executor, reflection, recovery, checkpoint, handoff, complete, fail, script_recovery), GraphEdge (transicoes condicionais com prioridade), StateGraph (construcao, compilacao e validacao), GraphExecutor (traversal com cancel_event, max_visits guard, start_node override) e GraphTraversalLog (historico completo de nos visitados com find_last_of_type).
-- **Graph Definitions** ✅: `graph_definitions.py` define 3 topologias de grafo: build_local_graph (14 nos, ~15 arestas com condicoes de safety/approval/success/failure/retry/script_recovery/replan/handoff), build_agentic_graph (10 nos com llm_loop como executor central e fallback_manual), build_manual_graph (5 nos para plan-and-present). Cada aresta usa funcoes de condicao tipadas (_edge_denied, _edge_retryable, _edge_script_recovery, etc.).
-- **Recovery com target_node** ✅: RecoveryEngine.classify e classify_action_result agora anexam target_node em cada classificacao via _attach_target_node (mapa: retry->executor, replan->planner, ask_user->handoff, switch_tooling->planner, verify_outcome->reflection, execute_script->script_recovery, stop->fail). RecoveryEngine.resolve_graph_target consulta o GraphExecutor para resolver o no exato usando target_node, suggested_action ou traversal log.
-- **ActionExecutor graph-aware** ✅: ActionExecutor._resolve_graph_recovery_target usa RuntimeManager._graph_executor_for para obter o executor do grafo ativo e resolver target_node. state["recovery"] agora inclui target_node em todas as classificacoes.
-- **RuntimeManager com grafos compilados** ✅: RuntimeManager inicializa 3 GraphExecutors no __init__ e anota state["_pipeline_graph"] em cada pipeline para tracking. _execute_task_with_recovery registra nos no GraphTraversalLog. _graph_executor_for retorna o executor correto por pipeline name.
-- **System prompt atualizado** ✅: AgenticLoop._system_prompt documenta a execucao por state graph e explica os target_nodes para o LLM.
-- **51 testes** ✅: test_state_graph.py com cobertura completa de GraphNode, GraphEdge, StateGraph, GraphTraversalLog, GraphExecutor (linear, conditional, loops, cancel, handoff, start_node override, max_visits), find_recovery_target, graph definitions topology, RecoveryEngine target_node e integration walkthroughs.
+- [ ] **Cognitive layer**: planejamento, raciocinio, decisao de estrategia
+- [ ] **Operational layer**: orquestracao de tasks, retry, recovery
+- [ ] **Execution layer**: execucao real de tools, sandbox, UI automation
+- [ ] **State layer**: persistencia, world model, strategy memory
 
-### Selector Healing Pro-ativo ✅ Concluido
+#### Hardening do sandbox
 
-Quando o pywinauto falha em encontrar um elemento UI, o agente agora usa automaticamente o World Model para buscar seletores similares, testa-los contra a UI ao vivo e, se funcionar, atualizar o seletor com confianca renovada.
+Execucao dinamica de Python/PowerShell em ambiente agentico exige protecoes robustas:
 
-- **SelectorHealer engine** ✅: `selector_healing.py` implementa o motor de self-healing. Pipeline: fail -> search World Model (por app_context + fuzzy similarity) -> score candidatos -> try na UI ao vivo via _resolve_candidates -> heal -> update World Model. HealingResult rastreia healed/original_selector/healed_selector/score/source/candidates_tried. Constantes configuráveis: HEAL_MIN_SCORE=0.60, HEAL_CONFIDENCE_ON_SUCCESS=0.90, HEAL_CONFIDENCE_BOOST=0.15.
-- **World Model integration** ✅: Cada seletor bem-sucedido e automaticamente registrado no World Model via record_successful_selector (intent key + app_context + confidence baseada no match score). Ao curar, o healer atualiza o seletor original E cria um alias para o intent do seletor que falhou, garantindo que futuras tentativas encontrem o seletor correto.
-- **WindowsUiAgent wiring** ✅: WindowsUiAgent recebe o World Model via set_world_model() e expoe _get_healer() (lazy init). _record_successful_target agora tambem persiste no World Model via _schedule_world_model_record (fire-and-forget asyncio task).
-- **WindowsUiTool auto-healing** ✅: tool_windows_ui.py intercepta element_not_found em find_element e "element not found" em acoes de mutacao (invoke_element, set_text, select_item, scroll, read_element_text). _attempt_selector_healing tenta curar via SelectorHealer.heal() e, se bem-sucedido, retorna sucesso com dados de healing. Para acoes de mutacao, re-executa a acao com o seletor curado.
-- **RuntimeManager wiring** ✅: RuntimeManager._wire_world_model_to_ui_tool() conecta o World Model ao WindowsUiTool no __init__, ativando o healing automaticamente.
-- **query_similar_selectors** ✅: WorldModel.query_similar_selectors() oferece busca ampla de seletores para o healing (por app_context e/ou query textual, com min_confidence baixo).
-- **32 testes** ✅: test_selector_healing.py com cobertura de _selector_intent_key, _selector_similarity, HealingResult, SelectorHealer.heal (no candidates, candidate matches, below min score, skips identical, multiple candidates picks best, no UI agent, updates world model, alias creation, candidates_tried count), record_successful_selector, WindowsUiAgent/WindowsUiTool integration, WorldModel.query_similar_selectors e end-to-end flow.
+- [ ] Capability isolation (restringir acesso por script)
+- [ ] Filesystem scopes (limitar I/O por run)
+- [ ] Command policies (whitelist/blacklist de comandos e modulos)
+- [ ] Provenance (rastrear origem de cada script: quem gerou, por que, quando)
+- [ ] Audit trails (log completo de inputs e outputs)
 
-## Implementacoes futuras e riscos arquiteturais
+#### Verificacao semantica robusta
 
-Esta secao documenta melhorias estruturais que o projeto vai precisar para escalar sem colapsar em complexidade. Sao observacoes criticas sobre o estado atual e direcoes concretas para o futuro.
+Alem de verificar se a tool retornou success, verificar se o objetivo real foi alcancado:
 
-### 1. Governanca arquitetural rigida contra complexidade
+- [ ] Goal verification ("o objetivo foi realmente atingido?")
+- [ ] Semantic validation ("o resultado faz sentido no contexto?")
+- [ ] Postcondition checks ("o relatorio foi criado?", "o email foi enviado?")
 
-O projeto esta MUITO perto de virar complexo demais. Esse e o maior risco hoje. Ja existem: runtime, planner, memory, strategy memory, recovery, sandbox, dynamic tools, approvals, world model, UI automation, artifact pipeline, office adapters. Isso comeca a entrar no territorio de **distributed cognitive runtime**. Sem governanca arquitetural muito rigida, vira caos. Acoes futuras:
+#### Execution economics
 
-- Definir contratos claros entre camadas (interfaces, nao implementacoes)
-- Estabelecer boundaries explicitos entre modulos
-- Criar testes de contrato entre componentes
-- Documentar invariantes arquiteturais que nao podem ser violados
+Controle economico de execucao para evitar loops caros e exploracao inutil:
 
-### 2. Arquitetura de eventos mais explicita
+- [ ] Custo por run (tokens, tempo, recursos)
+- [ ] Complexidade de caminho (tools e passos por abordagem)
+- [ ] Heuristicas de parada (quando pedir ajuda vs. explorar mais)
+- [ ] Otimizacao de rota (escolher caminho mais eficiente)
 
-O sistema ja e implicitamente event-driven, mas ainda parece procedural/orchestrated. A migracao mental deve ir para: **Event Bus**, **State Transitions**, **Execution Graph**. Retries, replanning, handoffs, recovery, approvals e pause/resume ja sao naturalmente orientados a eventos. Hoje o padrao e "runtime chama runtime" — no futuro isso escala mal. Acoes futuras:
+#### Evolucao do grafo de execucao
 
-- Introduzir um event bus explicito entre componentes
-- Modelar transicoes de estado como eventos first-class
-- Desacoplar orchestration de execution via eventos
-- Permitir que novos consumers se inscrevam em eventos sem modificar producers
+O State Graph ja esta implementado. Proximos passos:
 
-### 3. Separacao entre reasoning e execution
+- [ ] Dependency graph entre sub-tarefas (nao apenas sequencia)
+- [ ] Branch execution (caminhos alternativos em paralelo)
+- [ ] Speculative execution (iniciar sub-tarefas antes de confirmar necessidade)
+- [ ] Partial completion (concluir parcialmente e prosseguir com resultados intermediarios)
 
-Hoje reasoning e execution estao relativamente acoplados. Futuramente o projeto vai precisar de camadas distintas:
+#### Embedding models reais
 
-- **Cognitive layer**: planejamento, raciocinio, decisao de estrategia
-- **Operational layer**: orquestracao de tasks, retry, recovery
-- **Execution layer**: execucao real de tools, sandbox, UI automation
-- **State layer**: persistencia, world model, strategy memory
+O semantic index usa feature hashing local (rapido, offline, deterministico). Para buscas mais sofisticadas:
 
-Sem essa separacao, o planner comeca a conhecer demais o runtime, e isso vira acoplamento infernal. O objetivo e que cada camada possa evoluir independentemente.
+- [ ] Plug-in de sentence-transformers ou modelos all-MiniLM
+- [ ] Re-ranking hibrido (BM25 + vetorial)
+- [ ] Indexacao incremental com batch updates
 
-### 4. Hardening do sandbox
-
-A execucao dinamica de Python/PowerShell e um canhao nuclear arquitetural. Hoje funciona em ambiente controlado com timeout e isolamento basico, mas para autonomia real o projeto vai precisar de:
-
-- **Capability isolation**: restringir o que scripts podem acessar
-- **Filesystem scopes**: limitar escrita/leitura a diretorios especificos por run
-- **Command policies**: whitelist/blacklist de comandos e modulos
-- **Syscall restrictions**: limitar operacoes de sistema disponiveis
-- **Provenance**: rastrear origem de cada script executado (quem gerou, por que, quando)
-- **Audit trails**: log completo de tudo que o sandbox executou, com inputs e outputs
-
-Esse e exatamente o tipo de coisa que explode em runtime agentic sem essas protecoes.
-
-### 5. Verificacao semantica robusta
-
-Hoje o agente executa, verifica superficialmente e continua. Mas autonomia robusta exige verificacao semantica real:
-
-- **Goal verification**: "o objetivo foi realmente alcancado?"
-- **Semantic validation**: "o resultado faz sentido no contexto do pedido?"
-- **Postcondition checks**: "o relatorio foi criado?", "o Excel contem os dados corretos?", "o email foi enviado para a pessoa certa?"
-
-Isso e MUITO mais dificil do que executar tools. Requer que o agente saiba interpretar o resultado no contexto do objetivo original, nao apenas verificar se a tool retornou success.
-
-### 6. Execution economics
-
-O projeto ainda vai precisar de controle economico de execucao:
-
-- **Custo operacional**: quanto cada run consome em tokens, tempo e recursos
-- **Complexidade de caminho**: quantas tools e passos cada abordagem exige
-- **Heuristicas de execucao**: quando parar de explorar e pedir ajuda
-- **Otimizacao de caminho**: escolher a rota mais eficiente entre alternativas
-
-Agentes autonomos podem facilmente gastar tokens demais, explorar caminhos inuteis e entrar em loops caros. Sem execution economics, o custo operacional cresce sem controle.
-
-### 7. Planner com grafo de execucao ✅ Parcialmente implementado
-
-A migracao para State Graph foi implementada. O runtime agora usa grafos de estado (`state_graph.py`, `graph_definitions.py`) em vez de pipelines lineares. Cada pipeline (agentic, local_heuristic, manual_assist) tem um grafo compilado com nos tipados (entry, planner, safety, approval, executor, reflection, recovery, script_recovery, checkpoint, handoff, complete, fail) e arestas condicionais entre eles. O RecoveryEngine agora anexa `target_node` em cada classificacao, indicando para qual no exato do grafo a execucao deve retornar. O GraphExecutor.find_recovery_target resolve o no alvo usando: (1) target_node explicito, (2) mapeamento suggested_action -> NodeType, (3) historico do traversal log.
-
-Itens que ainda precisam evoluir:
-
-- **Dependency graph entre tarefas**: dependencias explicitas (nao apenas sequencia) entre sub-tarefas
-- **Branch execution**: caminhos alternativos tentados em paralelo dentro do grafo
-- **Speculative execution**: iniciar sub-tarefas antes de confirmar necessidade
-- **Partial completion**: concluir parcialmente uma tarefa e prosseguir com resultados intermediarios
+---
 
 ## Documentacao complementar
 
-Para detalhes mais profundos:
+- `README_PROJECT.md` — panorama tecnico completo do runtime e arquitetura
+- `README_SETUP.md` — setup local, CI e troubleshooting
 
-- `README_PROJECT.md`: panorama tecnico mais completo do runtime e da arquitetura
-- `README_SETUP.md`: setup local, CI e troubleshooting
+---
 
 ## Direcao do projeto
 
-Objetivo: construir um agente desktop local que opere no Windows de forma parecida com um operador humano, mas usando APIs nativas, tools tipadas, approvals claros e runtime duravel.
+Construir um agente desktop local que opere no Windows como um operador humano experiente: usando APIs nativas, tools tipadas, approvals claros, runtime duravel e aprendizado continuo.
 
-Direcao atual:
+Principios:
 
-- mais autonomia operacional via execucao proativa
-- menos fallback precoce
-- menos friccao de approval para discovery
-- mais verificacao semantica de resultado
-- zero dependencia de pixel automation como espinha dorsal
-- execucao baseada em grafo de estados para recovery preciso e extensibilidade
+- **Autonomia crescente**: menos fallback precoce, mais resolucao proativa
+- **Zero pixel automation**: APIs nativas como espinha dorsal
+- **Aprendizado real**: cada run melhora o world model e strategy memory
+- **Durabilidade**: o sistema sobrevive crashes, restarts e interrupcoes
+- **Transparencia**: cada decisao e rastreavel, cada acao e auditavel

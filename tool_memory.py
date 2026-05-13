@@ -15,7 +15,8 @@ MEMORY_ACTIONS = (
     'world_upsert|world_get|world_query|world_delete|world_touch|world_prune|world_types|'
     'world_remember_share|world_remember_app|world_remember_alias|world_remember_selector|world_remember_path|'
     'world_find_share|world_find_app|world_find_alias|world_find_selector|world_find_path|'
-    'strategy_record_success|strategy_record_failure|strategy_find|strategy_best|strategy_reused|strategy_goal_types'
+    'strategy_record_success|strategy_record_failure|strategy_find|strategy_best|strategy_reused|strategy_goal_types|'
+    'semantic_search_strategies|semantic_search_entities'
 )
 
 
@@ -39,6 +40,7 @@ class MemoryInput(BaseModel):
     error: Optional[str] = None
     duration_ms: Optional[int] = None
     boost_confidence: Optional[float] = None
+    limit: Optional[int] = None
 
 
 class MemoryOutput(BaseModel):
@@ -288,5 +290,22 @@ class MemoryTool(BaseTool):
         if payload.action == 'strategy_goal_types':
             types = await self.strategy_memory.list_goal_types()
             return MemoryOutput(success=True, items=types, message='goal_types_listed')
+
+        if payload.action == 'semantic_search_strategies':
+            results = await self.strategy_memory.semantic_search(
+                payload.query or '',
+                goal_type=payload.goal_type if payload.goal_type else None,
+                limit=int(payload.limit or 5),
+            )
+            return MemoryOutput(success=True, items=results, message='semantic_strategies_found')
+
+        if payload.action == 'semantic_search_entities':
+            results = await self.world_model.semantic_search(
+                payload.query or '',
+                entity_type=payload.entity_type if payload.entity_type else None,
+                app_context=payload.app_context if payload.app_context else None,
+                limit=int(payload.limit or 10),
+            )
+            return MemoryOutput(success=True, items=results, message='semantic_entities_found')
 
         return MemoryOutput(success=False, message='unknown')
