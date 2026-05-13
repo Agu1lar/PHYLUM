@@ -474,15 +474,24 @@ Habilitar extended thinking (Anthropic) ou chain-of-thought permite ao modelo av
 - [x] Timeout adaptativo (120s) para chamadas com thinking ativo
 - [x] Remocao de fallback morto (`SCRIPT_TEMPLATES["read_email_outlook"]`)
 
-#### Context window management (sumarizacao de resultados)
+#### Context window management (sumarizacao de resultados) — IMPLEMENTADO
 
-Quando uma tool retorna dados grandes (ex: 3 emails com 3000 chars cada), tudo vai cru no proximo step como contexto.
-Isso despertica tokens e contribui para truncamento de respostas. A evolucao e comprimir resultados antigos:
+`ContextWindowManager` (core/context_window.py) comprime automaticamente mensagens antigas antes de cada chamada ao LLM,
+mantendo a conversa dentro do token budget sem perder dados criticos:
 
-- [ ] Sumarizar tool results apos consumo (manter resumo, descartar detalhes)
-- [ ] Sliding window com prioridade recency (resultados recentes inteiros, antigos resumidos)
-- [ ] Token budgeting por step (garantir espaco para o LLM responder)
-- [ ] Compressao seletiva: manter dados numericos/paths inteiros, comprimir texto narrativo
+- [x] Sumarizar tool results apos consumo (manter resumo, descartar detalhes)
+- [x] Sliding window com prioridade recency (resultados recentes inteiros, antigos resumidos)
+- [x] Token budgeting por step (garantir espaco para o LLM responder — reserve_for_response=8000 tokens)
+- [x] Compressao seletiva: manter dados numericos/paths inteiros, comprimir texto narrativo
+
+Detalhes da implementacao:
+- **Estimativa de tokens**: heuristica chars/4, aplicada por mensagem incluindo tool_calls e thinking_blocks
+- **Sliding window**: ultimas N tool results (recency_window=4) nunca sao comprimidas
+- **Compressao estruturada**: tool results JSON sao parseados; paths, URLs, numeros, status e IDs preservados; texto narrativo longo truncado com marcador `[compressed]`
+- **Listas grandes**: truncadas para 2-3 primeiros elementos + contagem dos restantes
+- **Emergency drop**: se compressao nao for suficiente, tool results mais antigos sao substituidos por placeholder minimal
+- **Integracao**: `agentic_loop.py` chama `compress_if_needed()` antes de cada `client.complete()`
+- **Testes**: 26 testes dedicados cobrindo estimativa, recency, compressao seletiva, budget e emergency drop
 
 #### Web research como parte da discovery autonoma
 

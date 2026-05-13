@@ -8,6 +8,7 @@ import json
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from canonical_tools import agentic_tool_definitions, to_openai_tool_call
+from context_window import ContextWindowManager
 from multi_provider_client import MultiProviderClient
 from nodes_reflection import ReflectionNode
 from nodes_safety import SafetyNode
@@ -37,6 +38,7 @@ class AgenticLoop:
         self.reflection = reflection
         self.max_steps = max_steps
         self.prompt_cache = PromptCache()
+        self.context_window = ContextWindowManager()
 
     async def run(
         self,
@@ -77,11 +79,12 @@ class AgenticLoop:
                     "summary": f"Calling {provider_id}:{provider_config['model']}",
                 },
             )
+            messages_for_llm = self.context_window.compress_if_needed(messages)
             turn = await self.client.complete(
                 provider=provider_id,
                 api_key=provider_config["api_key"],
                 model=provider_config["model"],
-                messages=messages,
+                messages=messages_for_llm,
                 tools=tools_for_provider,
                 base_url=provider_config.get("base_url"),
             )

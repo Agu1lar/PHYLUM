@@ -233,6 +233,15 @@ const SettingsPanel: React.FC = () => {
           </div>
         </div>
       ) : null}
+      <div className="rounded border border-amber-800/60 bg-amber-950/20 p-4">
+        <h2 className="text-lg font-semibold text-amber-200">Provedores de LLM</h2>
+        <p className="mt-2 text-sm text-amber-100/80">
+          O desenvolvimento e testes do PHYLUM sao realizados primariamente com a API da <strong>Anthropic (Claude)</strong>.
+          Funcionalidades avancadas como <em>extended thinking</em>, <em>prompt caching</em> e <em>thinking block preservation</em> sao
+          exclusivas da Anthropic. Outros provedores (OpenAI, Gemini, OpenRouter) funcionam para operacoes basicas,
+          mas estao mais suscetiveis a falhas ou comportamentos inesperados por nao serem o alvo principal de testes.
+        </p>
+      </div>
       {providers.map(provider => (
         <ProviderCredentialsForm key={provider.provider} provider={provider} />
       ))}

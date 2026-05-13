@@ -367,10 +367,15 @@ const ChatPanel: React.FC<{ showAdvanced?: boolean }> = ({ showAdvanced = true }
             <option value="">Selecione</option>
             {configuredProviders.map(provider => (
               <option key={provider.provider} value={provider.provider}>
-                {provider.display_name}
+                {provider.display_name}{provider.provider === 'anthropic' ? ' (recomendado)' : ''}
               </option>
             ))}
           </select>
+          {selectedProvider && selectedProvider !== 'anthropic' && (
+            <p className="mt-1 text-[11px] text-amber-400/70">
+              Provider nao validado extensivamente. Para melhor estabilidade, use Anthropic.
+            </p>
+          )}
         </label>
         <label className="text-sm text-gray-300">
           Model

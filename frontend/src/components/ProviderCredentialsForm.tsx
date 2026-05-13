@@ -105,14 +105,32 @@ const ProviderCredentialsForm: React.FC<Props> = ({ provider }) => {
     }
   }
 
+  const isPrimary = provider.provider === 'anthropic'
+
   return (
-    <div className="rounded border border-gray-700 bg-gray-800 p-4 space-y-3">
+    <div className={`rounded border p-4 space-y-3 ${isPrimary ? 'border-blue-700/60 bg-gray-800' : 'border-gray-700 bg-gray-800'}`}>
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h3 className="text-lg font-semibold">{provider.display_name}</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="text-lg font-semibold">{provider.display_name}</h3>
+            {isPrimary ? (
+              <span className="rounded-full bg-blue-900/60 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-200">
+                Recomendado
+              </span>
+            ) : (
+              <span className="rounded-full bg-gray-700/60 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-400">
+                Experimental
+              </span>
+            )}
+          </div>
           <p className="text-xs text-gray-400">
             {provider.configured ? `Configurado (termina em ${provider.last4 ?? '----'})` : 'Sem credencial salva'}
           </p>
+          {!isPrimary && (
+            <p className="mt-1 text-xs text-amber-400/70">
+              Suporte basico — nao validado extensivamente. Pode apresentar falhas em fluxos complexos.
+            </p>
+          )}
         </div>
         <span className={`rounded px-2 py-1 text-xs ${provider.configured ? 'bg-green-900 text-green-200' : 'bg-gray-700 text-gray-300'}`}>
           {provider.configured ? 'Configured' : 'Not configured'}
