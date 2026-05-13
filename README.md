@@ -74,6 +74,9 @@ Arquivos centrais:
 - `durable_queue.py`
 - `session_manager.py`
 - `execution_strategy.py`
+- `state_graph.py`
+- `graph_definitions.py`
+- `selector_healing.py`
 
 ## Superficie operacional atual
 
@@ -139,6 +142,8 @@ Exemplos praticos do nivel atual:
 - receber tarefas complexas multi-fonte (ex: "leia emails, cruze com planilha, crie relatorio") e resolver com scripts gerados em tempo real
 - contornar a ausencia de tools especificas gerando scripts de automacao ou analise sob demanda
 - recuperar automaticamente de falhas operacionais criando abordagens ou scripts alternativos quando o caminho primario falha
+- executar pipelines como grafos de estado (state graph) em vez de loops lineares, permitindo recovery preciso para o no exato do grafo onde a falha ocorreu
+- curar automaticamente seletores UI quebrados usando o World Model: quando pywinauto nao encontra um botao/elemento, o agente busca candidatos similares no World Model, tenta na UI ao vivo e, se funcionar, atualiza o seletor com confianca renovada
 
 ## O que o projeto ainda nao e
 
@@ -263,6 +268,30 @@ A nova visao estabelece que o sistema nao deve ficar engessado as tools atuais. 
 - **Decisao autonoma interno vs. desktop** ✅: ExecutionStrategy.decide_execution_mode classifica cada task em internal/desktop/script/native. Office COM reads (excel_read_range, outlook_search_messages, word_find_text) sao automaticamente redirecionadas para sandbox/artifact quando o objetivo e leitura de dados, nao interacao visual. Arquivos CSV/JSON/TXT/PDF/DOCX/XLSX sao processados internamente via artifact. RuntimeManager._apply_execution_strategy intercepta tasks no momento da criacao e redireciona transparentemente.
 - **Recuperacao inteligente com scripts alternativos** ✅: RecoveryEngine integra ExecutionStrategy.suggest_script_recovery como fallback antes de declarar falha terminal. Quando Office COM falha, gera script openpyxl/python-docx. Quando browser/Playwright falha, gera script urllib. Quando filesystem falha, gera script os/shutil. ActionExecutor._execute_script_recovery executa o script alternativo automaticamente e, se bem-sucedido, marca a task original como completed sem pedir intervencao do usuario.
 
+### Migracao para Grafo de Estados (State Graph) ✅ Concluido
+
+O loop linear de execucao foi substituido por um grafo de estados dirigido, inspirado em LangGraph mas mantendo o runtime proprio. Cada pipeline do RuntimeManager (agentic, local_heuristic, manual_assist) possui um grafo compilado com nos tipados e arestas condicionais.
+
+- **State Graph Engine** ✅: `state_graph.py` implementa o motor de execucao de grafos. GraphNode (13 tipos: entry, planner, router, safety, approval, executor, reflection, recovery, checkpoint, handoff, complete, fail, script_recovery), GraphEdge (transicoes condicionais com prioridade), StateGraph (construcao, compilacao e validacao), GraphExecutor (traversal com cancel_event, max_visits guard, start_node override) e GraphTraversalLog (historico completo de nos visitados com find_last_of_type).
+- **Graph Definitions** ✅: `graph_definitions.py` define 3 topologias de grafo: build_local_graph (14 nos, ~15 arestas com condicoes de safety/approval/success/failure/retry/script_recovery/replan/handoff), build_agentic_graph (10 nos com llm_loop como executor central e fallback_manual), build_manual_graph (5 nos para plan-and-present). Cada aresta usa funcoes de condicao tipadas (_edge_denied, _edge_retryable, _edge_script_recovery, etc.).
+- **Recovery com target_node** ✅: RecoveryEngine.classify e classify_action_result agora anexam target_node em cada classificacao via _attach_target_node (mapa: retry->executor, replan->planner, ask_user->handoff, switch_tooling->planner, verify_outcome->reflection, execute_script->script_recovery, stop->fail). RecoveryEngine.resolve_graph_target consulta o GraphExecutor para resolver o no exato usando target_node, suggested_action ou traversal log.
+- **ActionExecutor graph-aware** ✅: ActionExecutor._resolve_graph_recovery_target usa RuntimeManager._graph_executor_for para obter o executor do grafo ativo e resolver target_node. state["recovery"] agora inclui target_node em todas as classificacoes.
+- **RuntimeManager com grafos compilados** ✅: RuntimeManager inicializa 3 GraphExecutors no __init__ e anota state["_pipeline_graph"] em cada pipeline para tracking. _execute_task_with_recovery registra nos no GraphTraversalLog. _graph_executor_for retorna o executor correto por pipeline name.
+- **System prompt atualizado** ✅: AgenticLoop._system_prompt documenta a execucao por state graph e explica os target_nodes para o LLM.
+- **51 testes** ✅: test_state_graph.py com cobertura completa de GraphNode, GraphEdge, StateGraph, GraphTraversalLog, GraphExecutor (linear, conditional, loops, cancel, handoff, start_node override, max_visits), find_recovery_target, graph definitions topology, RecoveryEngine target_node e integration walkthroughs.
+
+### Selector Healing Pro-ativo ✅ Concluido
+
+Quando o pywinauto falha em encontrar um elemento UI, o agente agora usa automaticamente o World Model para buscar seletores similares, testa-los contra a UI ao vivo e, se funcionar, atualizar o seletor com confianca renovada.
+
+- **SelectorHealer engine** ✅: `selector_healing.py` implementa o motor de self-healing. Pipeline: fail -> search World Model (por app_context + fuzzy similarity) -> score candidatos -> try na UI ao vivo via _resolve_candidates -> heal -> update World Model. HealingResult rastreia healed/original_selector/healed_selector/score/source/candidates_tried. Constantes configuráveis: HEAL_MIN_SCORE=0.60, HEAL_CONFIDENCE_ON_SUCCESS=0.90, HEAL_CONFIDENCE_BOOST=0.15.
+- **World Model integration** ✅: Cada seletor bem-sucedido e automaticamente registrado no World Model via record_successful_selector (intent key + app_context + confidence baseada no match score). Ao curar, o healer atualiza o seletor original E cria um alias para o intent do seletor que falhou, garantindo que futuras tentativas encontrem o seletor correto.
+- **WindowsUiAgent wiring** ✅: WindowsUiAgent recebe o World Model via set_world_model() e expoe _get_healer() (lazy init). _record_successful_target agora tambem persiste no World Model via _schedule_world_model_record (fire-and-forget asyncio task).
+- **WindowsUiTool auto-healing** ✅: tool_windows_ui.py intercepta element_not_found em find_element e "element not found" em acoes de mutacao (invoke_element, set_text, select_item, scroll, read_element_text). _attempt_selector_healing tenta curar via SelectorHealer.heal() e, se bem-sucedido, retorna sucesso com dados de healing. Para acoes de mutacao, re-executa a acao com o seletor curado.
+- **RuntimeManager wiring** ✅: RuntimeManager._wire_world_model_to_ui_tool() conecta o World Model ao WindowsUiTool no __init__, ativando o healing automaticamente.
+- **query_similar_selectors** ✅: WorldModel.query_similar_selectors() oferece busca ampla de seletores para o healing (por app_context e/ou query textual, com min_confidence baixo).
+- **32 testes** ✅: test_selector_healing.py com cobertura de _selector_intent_key, _selector_similarity, HealingResult, SelectorHealer.heal (no candidates, candidate matches, below min score, skips identical, multiple candidates picks best, no UI agent, updates world model, alias creation, candidates_tried count), record_successful_selector, WindowsUiAgent/WindowsUiTool integration, WorldModel.query_similar_selectors e end-to-end flow.
+
 ## Implementacoes futuras e riscos arquiteturais
 
 Esta secao documenta melhorias estruturais que o projeto vai precisar para escalar sem colapsar em complexidade. Sao observacoes criticas sobre o estado atual e direcoes concretas para o futuro.
@@ -330,17 +359,16 @@ O projeto ainda vai precisar de controle economico de execucao:
 
 Agentes autonomos podem facilmente gastar tokens demais, explorar caminhos inuteis e entrar em loops caros. Sem execution economics, o custo operacional cresce sem controle.
 
-### 7. Planner com grafo de execucao
+### 7. Planner com grafo de execucao ✅ Parcialmente implementado
 
-O planner atual e relativamente linear. Eventualmente vai precisar evoluir para:
+A migracao para State Graph foi implementada. O runtime agora usa grafos de estado (`state_graph.py`, `graph_definitions.py`) em vez de pipelines lineares. Cada pipeline (agentic, local_heuristic, manual_assist) tem um grafo compilado com nos tipados (entry, planner, safety, approval, executor, reflection, recovery, script_recovery, checkpoint, handoff, complete, fail) e arestas condicionais entre eles. O RecoveryEngine agora anexa `target_node` em cada classificacao, indicando para qual no exato do grafo a execucao deve retornar. O GraphExecutor.find_recovery_target resolve o no alvo usando: (1) target_node explicito, (2) mapeamento suggested_action -> NodeType, (3) historico do traversal log.
 
-- **Task graph**: tarefas como nos em um grafo, nao uma lista sequencial
-- **Dependency graph**: dependencias explicitas entre tarefas
-- **Branch execution**: caminhos alternativos que podem ser tentados em paralelo
-- **Speculative execution**: iniciar sub-tarefas antes de confirmar que serao necessarias
-- **Partial completion**: concluir parcialmente uma tarefa e continuar com o que ja esta pronto
+Itens que ainda precisam evoluir:
 
-Isso e especialmente critico para tarefas longas onde o plano precisa adaptar-se em tempo real.
+- **Dependency graph entre tarefas**: dependencias explicitas (nao apenas sequencia) entre sub-tarefas
+- **Branch execution**: caminhos alternativos tentados em paralelo dentro do grafo
+- **Speculative execution**: iniciar sub-tarefas antes de confirmar necessidade
+- **Partial completion**: concluir parcialmente uma tarefa e prosseguir com resultados intermediarios
 
 ## Documentacao complementar
 
@@ -360,3 +388,4 @@ Direcao atual:
 - menos friccao de approval para discovery
 - mais verificacao semantica de resultado
 - zero dependencia de pixel automation como espinha dorsal
+- execucao baseada em grafo de estados para recovery preciso e extensibilidade

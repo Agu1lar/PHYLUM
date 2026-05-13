@@ -28,7 +28,9 @@ from world_model import WorldModel
 from strategy_memory import StrategyMemory
 from durable_queue import DurableQueue
 from execution_strategy import ExecutionStrategy
+from graph_definitions import build_agentic_graph, build_local_graph, build_manual_graph
 from session_manager import SessionManager
+from state_graph import GraphExecutor, NodeType
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +81,7 @@ class RuntimeManager:
         self.action_executor = ActionExecutor(self)
         self.desktop_agent = DesktopWindowsAgent()
         self.world_model = WorldModel(self.persistence)
+        self._wire_world_model_to_ui_tool()
         self.strategy_memory = StrategyMemory(self.persistence)
         self.goal_queue = DurableQueue(self.persistence)
         self.session_manager = SessionManager(self.persistence)
@@ -96,6 +99,19 @@ class RuntimeManager:
         self.approval_run_map: Dict[str, str] = {}
         self._daemon_task: Optional[asyncio.Task] = None
         self._daemon_running = False
+
+        self._local_graph = build_local_graph()
+        self._agentic_graph = build_agentic_graph()
+        self._manual_graph = build_manual_graph()
+        self._local_executor = GraphExecutor(self._local_graph)
+        self._agentic_executor = GraphExecutor(self._agentic_graph)
+        self._manual_executor = GraphExecutor(self._manual_graph)
+
+    def _wire_world_model_to_ui_tool(self) -> None:
+        """Connect the World Model to the WindowsUiTool for selector healing."""
+        ui_tool = self.tool_router.tools.get("windows_ui")
+        if ui_tool is not None and hasattr(ui_tool, "set_world_model"):
+            ui_tool.set_world_model(self.world_model)
 
     async def submit_run(
         self,
@@ -759,18 +775,23 @@ class RuntimeManager:
             if state["inputs"].get("allow_local_execution") and (
                 state["runtime_mode"] != "agentic" or not state.get("provider")
             ):
+                state["_pipeline_graph"] = "local_heuristic"
                 await self._run_local_heuristic_pipeline(state)
                 return
 
             use_manual_assist, reason = await self._should_use_manual_assist(state)
             if use_manual_assist:
                 if state["inputs"].get("allow_local_execution"):
+                    state["_pipeline_graph"] = "local_heuristic"
                     await self._run_local_heuristic_pipeline(state)
                 else:
+                    state["_pipeline_graph"] = "manual_assist"
                     await self._run_manual_assist_pipeline(state, reason=reason)
             elif state["runtime_mode"] == "agentic":
+                state["_pipeline_graph"] = "agentic"
                 await self._run_agentic_pipeline(state)
             else:
+                state["_pipeline_graph"] = "local_heuristic"
                 await self._run_local_heuristic_pipeline(state)
         except RunPausedError:
             return
@@ -1355,7 +1376,33 @@ class RuntimeManager:
             await self._persist_state(state)
         await self.emitter(event)
 
+    def _graph_executor_for(self, state: Dict[str, Any]) -> Optional[GraphExecutor]:
+        name = state.get("_pipeline_graph")
+        if name == "local_heuristic":
+            return self._local_executor
+        if name == "agentic":
+            return self._agentic_executor
+        if name == "manual_assist":
+            return self._manual_executor
+        return None
+
     async def _execute_task_with_recovery(self, state: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
+        graph_exec = self._graph_executor_for(state)
+        if graph_exec and "_graph" not in state:
+            from state_graph import GraphTraversalLog
+            state["_graph"] = {
+                "current_node": "executor",
+                "traversal": GraphTraversalLog(),
+                "visits": 0,
+            }
+        if graph_exec:
+            state["_graph"]["current_node"] = "executor"
+            state["_graph"]["traversal"].record(
+                node_id="executor",
+                node_type=NodeType.EXECUTOR.value,
+                result_keys=None,
+                error=None,
+            )
         return await self.action_executor.execute(state, task)
 
     async def _plan_tasks(self, state: Dict[str, Any]) -> Dict[str, Any]:

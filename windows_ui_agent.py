@@ -52,10 +52,23 @@ def _safe_process_name(process_id: Optional[int]) -> Optional[str]:
 
 
 class WindowsUiAgent:
-    def __init__(self, *, selector_memory_path: Optional[Path] = None):
+    def __init__(self, *, selector_memory_path: Optional[Path] = None, world_model=None):
         self._element_cache: Dict[str, Dict[str, Any]] = {}
         self._selector_memory_path = selector_memory_path or SELECTOR_MEMORY_PATH
         self._selector_memory: Dict[str, Any] = self._load_selector_memory()
+        self._world_model = world_model
+        self._selector_healer = None
+
+    def set_world_model(self, world_model) -> None:
+        """Wire the World Model after construction (avoids circular init)."""
+        self._world_model = world_model
+        self._selector_healer = None
+
+    def _get_healer(self):
+        if self._selector_healer is None and self._world_model is not None:
+            from selector_healing import SelectorHealer
+            self._selector_healer = SelectorHealer(self._world_model, ui_agent=self)
+        return self._selector_healer
 
     def _desktop(self):
         _ensure_backend()
@@ -426,7 +439,37 @@ class WindowsUiAgent:
             element=element,
             score=score,
         )
+        self._schedule_world_model_record(
+            selector=element.selector,
+            process_name=process_name or element.process_name,
+            score=score,
+        )
         return element
+
+    def _schedule_world_model_record(
+        self,
+        *,
+        selector: Dict[str, Any],
+        process_name: Optional[str],
+        score: float,
+    ) -> None:
+        """Asynchronously record a successful selector in the World Model."""
+        healer = self._get_healer()
+        if healer is None:
+            return
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(
+                    healer.record_successful_selector(
+                        selector=selector,
+                        process_name=process_name,
+                        score=score,
+                    )
+                )
+        except Exception:
+            logger.debug("Failed to schedule world model selector record", exc_info=True)
 
     def _resolve_candidates(
         self,

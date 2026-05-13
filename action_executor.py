@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from action_models import action_needs_model_followup
 
@@ -144,11 +144,15 @@ class ActionExecutor:
                             attempt=int(task.get("attempt") or 1),
                             max_attempts=max_attempts,
                         )
+                        graph_target = self._resolve_graph_recovery_target(state, task["recovery"])
+                        if graph_target:
+                            task["recovery"]["target_node"] = graph_target
                         state["recovery"] = {
                             "task_id": task["id"],
                             "classification": task["recovery"]["classification"],
                             "reason": task["recovery"]["reason"],
                             "suggested_action": task["recovery"].get("suggested_action"),
+                            "target_node": task["recovery"].get("target_node"),
                         }
                         result["recovery"] = task["recovery"]
                     await self.runtime._record_task_observation(
@@ -235,11 +239,15 @@ class ActionExecutor:
                     attempt=int(task.get("attempt") or 1),
                     max_attempts=max_attempts,
                 )
+                graph_target = self._resolve_graph_recovery_target(state, task["recovery"])
+                if graph_target:
+                    task["recovery"]["target_node"] = graph_target
                 state["recovery"] = {
                     "task_id": task["id"],
                     "classification": task["recovery"]["classification"],
                     "reason": task["recovery"]["reason"],
                     "suggested_action": task["recovery"].get("suggested_action"),
+                    "target_node": task["recovery"].get("target_node"),
                 }
                 await self.runtime._record_task_observation(
                     state,
@@ -357,6 +365,13 @@ class ActionExecutor:
         except Exception:
             recovery_task["status"] = "failed"
         return None
+
+    def _resolve_graph_recovery_target(self, state: Dict[str, Any], recovery: Dict[str, Any]) -> Optional[str]:
+        """Ask the RuntimeManager's graph executor to find the best recovery node."""
+        graph_exec = self.runtime._graph_executor_for(state)
+        if graph_exec is None:
+            return recovery.get("target_node")
+        return self.runtime.recovery_engine.resolve_graph_target(state, recovery, graph_exec)
 
     def _is_agentic_task(self, state: Dict[str, Any], task: Dict[str, Any]) -> bool:
         return state.get("runtime_mode") == "agentic" and str(task.get("id", "")).startswith("agentic-")

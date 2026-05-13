@@ -362,6 +362,23 @@ class WorldModel:
     async def find_selector(self, selector_key: str, *, app_context: Optional[str] = None) -> Optional[WorldEntity]:
         return await self.best_candidate("selector", query=selector_key, app_context=app_context, min_confidence=0.3)
 
+    async def query_similar_selectors(
+        self,
+        *,
+        app_context: Optional[str] = None,
+        query: Optional[str] = None,
+        min_confidence: float = 0.2,
+        limit: int = 20,
+    ) -> List[WorldEntity]:
+        """Broader selector search for healing: returns multiple candidates sorted by confidence."""
+        return await self.query(
+            "selector",
+            query=query,
+            app_context=app_context,
+            min_confidence=min_confidence,
+            limit=limit,
+        )
+
     async def find_path_candidate(self, label: str) -> Optional[WorldEntity]:
         return await self.best_candidate("path_candidate", query=label.lower(), min_confidence=0.3)
 
