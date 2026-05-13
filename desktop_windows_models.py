@@ -35,13 +35,15 @@ class ServiceInfo(BaseModel):
 class DesktopRequest(BaseModel):
     action: str = Field(
         ...,
-        pattern='^(list_processes|list_windows|list_explorer_windows|list_mapped_drives|get_explorer_selection|open_app|open_path|open_file|wait_for_window|focus_window|close_window|kill_process|clipboard_get|clipboard_set|notify|list_services|service_action)$',
+        pattern='^(list_processes|list_windows|list_explorer_windows|list_mapped_drives|get_explorer_selection|explorer_context|explorer_select_path|explorer_navigate|explorer_rename_path|explorer_copy_path|explorer_move_path|inspect_installer|open_app|open_path|open_file|wait_for_window|focus_window|close_window|kill_process|clipboard_get|clipboard_set|notify|list_services|service_action)$',
     )
     hwnd: Optional[int] = None
     title: Optional[str] = None
     text: Optional[str] = None
     message: Optional[str] = None
     path: Optional[str] = None
+    dest: Optional[str] = None
+    new_name: Optional[str] = None
     app_name: Optional[str] = None
     app_path: Optional[str] = None
     arguments: Optional[List[str]] = None

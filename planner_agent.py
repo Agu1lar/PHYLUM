@@ -68,6 +68,7 @@ TOOL_KEYWORDS = {
     'find driver': {'tool': 'driver_manager', 'action': 'find_driver_candidates'},
     'printer status': {'tool': 'driver_manager', 'action': 'printer_status'},
     'printer driver info': {'tool': 'driver_manager', 'action': 'printer_driver_info'},
+    'printer diagnostics': {'tool': 'driver_manager', 'action': 'printer_diagnostics'},
     'restart spooler': {'tool': 'driver_manager', 'action': 'restart_spooler'},
     'system info': {'tool': 'os', 'action': 'overview'},
     'os info': {'tool': 'os', 'action': 'overview'},
@@ -87,6 +88,14 @@ TOOL_KEYWORDS = {
     'mapped drives': {'tool': 'desktop', 'action': 'list_mapped_drives'},
     'list explorer selection': {'tool': 'desktop', 'action': 'get_explorer_selection'},
     'selected files': {'tool': 'desktop', 'action': 'get_explorer_selection'},
+    'explorer context': {'tool': 'desktop', 'action': 'explorer_context'},
+    'select file in explorer': {'tool': 'desktop', 'action': 'explorer_select_path'},
+    'select path in explorer': {'tool': 'desktop', 'action': 'explorer_select_path'},
+    'navigate explorer': {'tool': 'desktop', 'action': 'explorer_navigate'},
+    'rename in explorer': {'tool': 'desktop', 'action': 'explorer_rename_path'},
+    'copy in explorer': {'tool': 'desktop', 'action': 'explorer_copy_path'},
+    'move in explorer': {'tool': 'desktop', 'action': 'explorer_move_path'},
+    'inspect installer': {'tool': 'desktop', 'action': 'inspect_installer'},
     'open app': {'tool': 'desktop', 'action': 'open_app'},
     'launch app': {'tool': 'desktop', 'action': 'open_app'},
     'open folder': {'tool': 'desktop', 'action': 'open_path'},
@@ -103,22 +112,35 @@ TOOL_KEYWORDS = {
     'stop service': {'tool': 'desktop', 'action': 'service_action'},
     'restart service': {'tool': 'desktop', 'action': 'service_action'},
     'inspect window': {'tool': 'windows_ui', 'action': 'inspect_window'},
+    'inspect dialog': {'tool': 'windows_ui', 'action': 'inspect_dialog'},
     'list elements': {'tool': 'windows_ui', 'action': 'list_elements'},
     'find element': {'tool': 'windows_ui', 'action': 'find_element'},
     'wait for element': {'tool': 'windows_ui', 'action': 'wait_for_element'},
     'read element text': {'tool': 'windows_ui', 'action': 'read_element_text'},
     'focused element': {'tool': 'windows_ui', 'action': 'get_focused_element'},
     'list shares': {'tool': 'share_discovery', 'action': 'list_mappings'},
+    'inspect corporate share': {'tool': 'share_discovery', 'action': 'inspect_corporate_share'},
     'inspect share': {'tool': 'share_discovery', 'action': 'inspect_share'},
     'find share': {'tool': 'share_discovery', 'action': 'discover_targets'},
     'recent documents': {'tool': 'document_intelligence', 'action': 'recent_documents'},
     'extract text': {'tool': 'document_intelligence', 'action': 'extract_text'},
+    'ocr document': {'tool': 'document_intelligence', 'action': 'extract_text'},
+    'ocr': {'tool': 'document_intelligence', 'action': 'extract_text'},
     'inspect document': {'tool': 'document_intelligence', 'action': 'inspect_document'},
     'search document content': {'tool': 'document_intelligence', 'action': 'search_content'},
+    'index documents': {'tool': 'document_intelligence', 'action': 'index_documents'},
+    'search document index': {'tool': 'document_intelligence', 'action': 'search_index'},
+    'discover documents': {'tool': 'document_intelligence', 'action': 'discover_documents'},
+    'find contracts': {'tool': 'document_intelligence', 'action': 'discover_documents'},
+    'find invoices': {'tool': 'document_intelligence', 'action': 'discover_documents'},
+    'find emails': {'tool': 'document_intelligence', 'action': 'discover_documents'},
     'open document': {'tool': 'office', 'action': 'open_document'},
     'export pdf': {'tool': 'office', 'action': 'export_pdf'},
     'save as': {'tool': 'office', 'action': 'save_as_document'},
     'list workbook sheets': {'tool': 'office', 'action': 'list_workbook_sheets'},
+    'word find text': {'tool': 'office', 'action': 'word_find_text'},
+    'excel read range': {'tool': 'office', 'action': 'excel_read_range'},
+    'outlook search messages': {'tool': 'office', 'action': 'outlook_search_messages'},
     'draft email': {'tool': 'office', 'action': 'draft_email_with_attachment'},
     'active document path': {'tool': 'office', 'action': 'reveal_active_document_path'},
     'move': {'tool': 'filesystem', 'action': 'move'},
@@ -133,6 +155,58 @@ TOOL_KEYWORDS = {
     'list files': {'tool': 'filesystem', 'action': 'list'},
     'file stat': {'tool': 'filesystem', 'action': 'stat'},
     'copy file': {'tool': 'filesystem', 'action': 'copy'},
+    'run python script': {'tool': 'sandbox', 'action': 'execute_python'},
+    'run python': {'tool': 'sandbox', 'action': 'execute_python'},
+    'execute python': {'tool': 'sandbox', 'action': 'execute_python'},
+    'python script': {'tool': 'sandbox', 'action': 'execute_python'},
+    'run powershell script': {'tool': 'sandbox', 'action': 'execute_powershell'},
+    'execute powershell script': {'tool': 'sandbox', 'action': 'execute_powershell'},
+    'run script': {'tool': 'sandbox', 'action': 'execute_python'},
+    'execute script': {'tool': 'sandbox', 'action': 'execute_python'},
+    'analyze file': {'tool': 'artifact', 'action': 'load'},
+    'load file': {'tool': 'artifact', 'action': 'load'},
+    'process file': {'tool': 'artifact', 'action': 'load'},
+    'read artifact': {'tool': 'artifact', 'action': 'load'},
+    'transform file': {'tool': 'artifact', 'action': 'transform'},
+    'summarize file': {'tool': 'artifact', 'action': 'transform'},
+    'file stats': {'tool': 'artifact', 'action': 'transform'},
+    'filter file': {'tool': 'artifact', 'action': 'transform'},
+    'create tool': {'tool': 'dynamic_tool', 'action': 'create'},
+    'create micro tool': {'tool': 'dynamic_tool', 'action': 'create'},
+    'list dynamic tools': {'tool': 'dynamic_tool', 'action': 'list'},
+    'run dynamic tool': {'tool': 'dynamic_tool', 'action': 'execute'},
+    'execute dynamic tool': {'tool': 'dynamic_tool', 'action': 'execute'},
+    'delete dynamic tool': {'tool': 'dynamic_tool', 'action': 'delete'},
+    'remember share': {'tool': 'memory', 'action': 'world_remember_share'},
+    'remember app path': {'tool': 'memory', 'action': 'world_remember_app'},
+    'remember app': {'tool': 'memory', 'action': 'world_remember_app'},
+    'remember alias': {'tool': 'memory', 'action': 'world_remember_alias'},
+    'remember document alias': {'tool': 'memory', 'action': 'world_remember_alias'},
+    'remember selector': {'tool': 'memory', 'action': 'world_remember_selector'},
+    'remember path': {'tool': 'memory', 'action': 'world_remember_path'},
+    'find known share': {'tool': 'memory', 'action': 'world_find_share'},
+    'find known app': {'tool': 'memory', 'action': 'world_find_app'},
+    'find known alias': {'tool': 'memory', 'action': 'world_find_alias'},
+    'find known selector': {'tool': 'memory', 'action': 'world_find_selector'},
+    'find known path': {'tool': 'memory', 'action': 'world_find_path'},
+    'lookup share': {'tool': 'memory', 'action': 'world_find_share'},
+    'lookup app': {'tool': 'memory', 'action': 'world_find_app'},
+    'lookup alias': {'tool': 'memory', 'action': 'world_find_alias'},
+    'lookup selector': {'tool': 'memory', 'action': 'world_find_selector'},
+    'lookup path': {'tool': 'memory', 'action': 'world_find_path'},
+    'query world model': {'tool': 'memory', 'action': 'world_query'},
+    'world model query': {'tool': 'memory', 'action': 'world_query'},
+    'list entity types': {'tool': 'memory', 'action': 'world_types'},
+    'prune expired': {'tool': 'memory', 'action': 'world_prune'},
+    'record strategy': {'tool': 'memory', 'action': 'strategy_record_success'},
+    'record successful strategy': {'tool': 'memory', 'action': 'strategy_record_success'},
+    'record failure': {'tool': 'memory', 'action': 'strategy_record_failure'},
+    'record failed strategy': {'tool': 'memory', 'action': 'strategy_record_failure'},
+    'find strategy': {'tool': 'memory', 'action': 'strategy_find'},
+    'best strategy': {'tool': 'memory', 'action': 'strategy_best'},
+    'reuse strategy': {'tool': 'memory', 'action': 'strategy_reused'},
+    'list goal types': {'tool': 'memory', 'action': 'strategy_goal_types'},
+    'list strategies': {'tool': 'memory', 'action': 'strategy_find'},
 }
 
 # Priority by tool importance (lower number = higher priority)
@@ -150,6 +224,9 @@ TOOL_PRIORITY = {
     'package_manager': 10,
     'web': 25,
     'filesystem': 30,
+    'artifact': 15,
+    'sandbox': 18,
+    'dynamic_tool': 22,
     'browser': 40,
     'memory': 50,
 }
@@ -365,11 +442,27 @@ class PlannerAgent:
             service_name = re.sub(r'^(start|stop|restart)\s+service\s+', '', part).strip().strip("'\"")
             if service_name:
                 params['service_name'] = service_name
-        if action in {'inspect_window', 'list_elements', 'find_element', 'wait_for_element', 'read_element_text'}:
+        if action in {'explorer_select_path', 'explorer_navigate', 'inspect_installer'}:
+            path = self._extract_path(part)
+            if path:
+                params['path'] = path
+        if action == 'explorer_rename_path':
+            path = self._extract_path(part)
+            if path:
+                params['path'] = path
+            m = re.search(r"\bto\s+(?P<name>[^,\n]+)$", part)
+            if m:
+                params['new_name'] = m.group('name').strip().strip("'\"")
+        if action in {'explorer_copy_path', 'explorer_move_path'}:
+            m = re.search(r"\b(?:copy|move)\s+in\s+explorer\s+(?P<src>[A-Za-z]:[\\/][^\n]+?)\s+to\s+(?P<dst>[A-Za-z]:[\\/][^\n]+)", part)
+            if m:
+                params['path'] = m.group('src').strip()
+                params['dest'] = m.group('dst').strip()
+        if action in {'inspect_window', 'inspect_dialog', 'list_elements', 'find_element', 'wait_for_element', 'read_element_text'}:
             title = part.replace(kw, '', 1).strip().strip("'\"")
             if title:
                 params['title'] = title
-        if action == 'inspect_share':
+        if action in {'inspect_share', 'inspect_corporate_share'}:
             path = self._extract_path(part)
             if path:
                 params['path'] = path
@@ -377,10 +470,24 @@ class PlannerAgent:
             query = part.replace(kw, '', 1).strip().strip("'\"")
             if query:
                 params['query'] = query
-        if action in {'inspect_document', 'extract_text', 'open_document', 'export_pdf', 'list_workbook_sheets'}:
+        if action in {'inspect_document', 'extract_text', 'open_document', 'export_pdf', 'list_workbook_sheets', 'word_find_text', 'excel_read_range'}:
             path = self._extract_path(part)
             if path:
                 params['path'] = path
+            if action == 'extract_text' and 'ocr' in part:
+                params['use_ocr'] = True
+        if action == 'word_find_text':
+            query = part.replace(kw, '', 1).replace(params.get('path') or '', '', 1).strip().strip("'\"")
+            if query:
+                params['query'] = query
+        if action == 'excel_read_range':
+            m = re.search(r"\brange\s+(?P<range>[A-Z]+\d+(?::[A-Z]+\d+)?)", part, re.IGNORECASE)
+            if m:
+                params['range_address'] = m.group('range').upper()
+        if action == 'outlook_search_messages':
+            query = part.replace(kw, '', 1).strip().strip("'\"")
+            if query:
+                params['query'] = query
         if action == 'search_content':
             path = self._extract_path(part)
             if path:
@@ -388,6 +495,27 @@ class PlannerAgent:
             query = part.replace(kw, '', 1).replace(path or '', '', 1).strip().strip("'\"")
             if query:
                 params['query'] = query
+        if action == 'index_documents':
+            path = self._extract_path(part)
+            if path:
+                params['root'] = path
+        if action == 'search_index':
+            query = part.replace(kw, '', 1).strip().strip("'\"")
+            if query:
+                params['query'] = query
+        if action == 'discover_documents':
+            path = self._extract_path(part)
+            if path:
+                params['root'] = path
+            query = part.replace(kw, '', 1).replace(path or '', '', 1).strip().strip("'\"")
+            if query:
+                params['query'] = query
+            if 'contract' in kw or 'contrato' in part:
+                params['filters'] = {'kind': 'contract'}
+            if 'invoice' in kw or 'nota fiscal' in part:
+                params['filters'] = {'kind': 'invoice'}
+            if 'email' in kw:
+                params['filters'] = {'kind': 'email'}
         if action == 'save_as_document':
             matches = re.search(r"save as\s+(?P<source>[A-Za-z]:[\\/][^\n]+?)\s+to\s+(?P<dest>[A-Za-z]:[\\/][^\n]+)", part)
             if matches:
@@ -401,7 +529,7 @@ class PlannerAgent:
             app_name = part.replace(kw, '', 1).strip().strip("'\"")
             if app_name:
                 params['app_name'] = app_name
-        if action in {'find_executable', 'find_install_location', 'find_uninstaller', 'search_installed', 'find_driver_candidates', 'device_status', 'printer_status', 'printer_driver_info'}:
+        if action in {'find_executable', 'find_install_location', 'find_uninstaller', 'search_installed', 'find_driver_candidates', 'device_status', 'printer_status', 'printer_driver_info', 'printer_diagnostics'}:
             query = part.replace(kw, '', 1).strip().strip("'\"")
             if query:
                 params['query'] = query
@@ -438,6 +566,45 @@ class PlannerAgent:
                 params['request_id'] = m.group('request')
         if action == 'list_installed':
             pass
+        if action in ('execute_python', 'execute_powershell'):
+            code = part
+            for prefix in ('run python script', 'run python', 'execute python', 'python script',
+                           'run powershell script', 'execute powershell script', 'run script', 'execute script'):
+                if code.startswith(prefix):
+                    code = code[len(prefix):].strip()
+                    break
+            if code:
+                params['code'] = code
+        if action == 'load' and kw in ('analyze file', 'load file', 'process file', 'read artifact'):
+            path = self._extract_path(part)
+            if path:
+                params['path'] = path
+        if action == 'transform' and kw in ('transform file', 'summarize file', 'file stats', 'filter file'):
+            path = self._extract_path(part)
+            if path:
+                params['path'] = path
+            if 'summarize' in part:
+                params['operation'] = 'summarize'
+            elif 'filter' in part:
+                params['operation'] = 'filter_lines'
+            elif 'stats' in part:
+                params['operation'] = 'stats'
+            elif 'table' in part or 'extract' in part:
+                params['operation'] = 'extract_table'
+            else:
+                params['operation'] = 'summarize'
+        if action == 'create' and kw in ('create tool', 'create micro tool'):
+            name = part.replace(kw, '', 1).strip().strip("'\"")
+            if name:
+                params['name'] = name
+        if action == 'execute' and kw in ('run dynamic tool', 'execute dynamic tool'):
+            tool_id = part.replace(kw, '', 1).strip().strip("'\"")
+            if tool_id:
+                params['tool_id'] = tool_id
+        if action == 'delete' and kw == 'delete dynamic tool':
+            tool_id = part.replace(kw, '', 1).strip().strip("'\"")
+            if tool_id:
+                params['tool_id'] = tool_id
         return params
 
     def _extract_path(self, text: str) -> Optional[str]:
@@ -600,8 +767,12 @@ class PlannerAgent:
                 if t.action in {'device_status', 'find_driver_candidates', 'printer_status', 'printer_driver_info'} and not t.params.get('query'):
                     errors.append(f"query required for task {t.id}")
             if t.tool == 'desktop':
-                if t.action in {'open_path', 'open_file'} and not t.params.get('path'):
+                if t.action in {'open_path', 'open_file', 'explorer_select_path', 'explorer_navigate', 'inspect_installer'} and not t.params.get('path'):
                     errors.append(f"path required for task {t.id}")
+                if t.action == 'explorer_rename_path' and (not t.params.get('path') or not t.params.get('new_name')):
+                    errors.append(f"path and new_name required for task {t.id}")
+                if t.action in {'explorer_copy_path', 'explorer_move_path'} and (not t.params.get('path') or not t.params.get('dest')):
+                    errors.append(f"path and dest required for task {t.id}")
                 if t.action == 'open_app' and not (t.params.get('app_name') or t.params.get('app_path')):
                     errors.append(f"app_name or app_path required for task {t.id}")
                 if t.action == 'wait_for_window' and not (t.params.get('title') or t.params.get('process_name') or t.params.get('hwnd')):
@@ -618,24 +789,65 @@ class PlannerAgent:
                     if not t.params.get('service_name') or not t.params.get('service_action'):
                         errors.append(f"service_action requires service_name and service_action for task {t.id}")
             if t.tool == 'windows_ui':
-                if t.action in {'inspect_window', 'list_elements', 'find_element', 'wait_for_element', 'read_element_text'} and not (
+                if t.action in {'inspect_window', 'inspect_dialog', 'list_elements', 'find_element', 'wait_for_element', 'read_element_text'} and not (
                     t.params.get('title') or t.params.get('process_name') or t.params.get('hwnd')
                 ):
                     errors.append(f"title, process_name or hwnd required for task {t.id}")
-            if t.tool == 'share_discovery' and t.action == 'inspect_share' and not t.params.get('path'):
+            if t.tool == 'share_discovery' and t.action in {'inspect_share', 'inspect_corporate_share'} and not t.params.get('path'):
                 errors.append(f"path required for task {t.id}")
             if t.tool == 'document_intelligence':
                 if t.action in {'inspect_document', 'extract_text'} and not t.params.get('path'):
                     errors.append(f"path required for task {t.id}")
                 if t.action == 'search_content' and (not t.params.get('root') or not t.params.get('query')):
                     errors.append(f"root and query required for task {t.id}")
+                if t.action in {'index_documents', 'discover_documents'} and not t.params.get('root'):
+                    errors.append(f"root required for task {t.id}")
+                if t.action == 'search_index' and not t.params.get('query'):
+                    errors.append(f"query required for task {t.id}")
             if t.tool == 'office':
-                if t.action in {'open_document', 'export_pdf', 'list_workbook_sheets'} and not t.params.get('path'):
+                if t.action in {'open_document', 'export_pdf', 'list_workbook_sheets', 'word_find_text', 'excel_read_range'} and not t.params.get('path'):
                     errors.append(f"path required for task {t.id}")
+                if t.action == 'word_find_text' and not t.params.get('query'):
+                    errors.append(f"query required for task {t.id}")
+                if t.action == 'outlook_search_messages' and not t.params.get('query'):
+                    errors.append(f"query required for task {t.id}")
                 if t.action == 'save_as_document' and (not t.params.get('path') or not t.params.get('output_path')):
                     errors.append(f"path and output_path required for task {t.id}")
                 if t.action == 'reveal_active_document_path' and not t.params.get('app_name'):
                     errors.append(f"app_name required for task {t.id}")
+            if t.tool == 'sandbox':
+                if t.action in {'execute_python', 'execute_powershell'} and not t.params.get('code'):
+                    errors.append(f"code required for task {t.id}")
+            if t.tool == 'artifact':
+                if t.action in {'load', 'transform'} and not t.params.get('path'):
+                    errors.append(f"path required for task {t.id}")
+                if t.action == 'transform' and not t.params.get('operation'):
+                    errors.append(f"operation required for task {t.id}")
+                if t.action == 'write_result' and (not t.params.get('content') or not t.params.get('output_path')):
+                    errors.append(f"content and output_path required for task {t.id}")
+            if t.tool == 'dynamic_tool':
+                if t.action == 'create' and (not t.params.get('name') or not t.params.get('code')):
+                    errors.append(f"name and code required for task {t.id}")
+                if t.action in {'execute', 'delete', 'get'} and not t.params.get('tool_id'):
+                    errors.append(f"tool_id required for task {t.id}")
+            if t.tool == 'memory' and t.action in {'world_upsert'} and (not t.params.get('entity_type') or not t.params.get('key')):
+                errors.append(f"entity_type and key required for task {t.id}")
+            if t.tool == 'memory' and t.action in {'world_get', 'world_delete', 'world_touch'} and (not t.params.get('entity_type') or not t.params.get('key')):
+                errors.append(f"entity_type and key required for task {t.id}")
+            if t.tool == 'memory' and t.action == 'world_query' and not t.params.get('entity_type'):
+                errors.append(f"entity_type required for task {t.id}")
+            if t.tool == 'memory' and t.action.startswith('world_remember_') and not t.params.get('key'):
+                errors.append(f"key required for task {t.id}")
+            if t.tool == 'memory' and t.action.startswith('world_find_') and not t.params.get('query'):
+                errors.append(f"query required for task {t.id}")
+            if t.tool == 'memory' and t.action == 'strategy_record_success' and (not t.params.get('strategy_id') or not t.params.get('goal_type')):
+                errors.append(f"strategy_id and goal_type required for task {t.id}")
+            if t.tool == 'memory' and t.action == 'strategy_record_failure' and not t.params.get('goal_type'):
+                errors.append(f"goal_type required for task {t.id}")
+            if t.tool == 'memory' and t.action in {'strategy_find', 'strategy_best'} and not t.params.get('goal_type'):
+                errors.append(f"goal_type required for task {t.id}")
+            if t.tool == 'memory' and t.action == 'strategy_reused' and (not t.params.get('goal_type') or not t.params.get('strategy_id')):
+                errors.append(f"goal_type and strategy_id required for task {t.id}")
         if not plan.tasks:
             errors.append("no supported tasks parsed from input")
         if errors:

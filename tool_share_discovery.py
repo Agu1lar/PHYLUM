@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class ShareDiscoveryInput(BaseModel):
-    action: str = Field(..., pattern="^(list_mappings|list_explorer_context|inspect_share|discover_targets)$")
+    action: str = Field(..., pattern="^(list_mappings|list_explorer_context|inspect_share|inspect_corporate_share|discover_targets)$")
     path: Optional[str] = None
     query: Optional[str] = None
     limit: Optional[int] = None
@@ -28,8 +28,8 @@ class ShareDiscoveryTool(BaseTool):
         self.agent = ShareDiscoveryAgent()
 
     async def validate(self, payload: ShareDiscoveryInput) -> None:
-        if payload.action == "inspect_share" and not payload.path:
-            raise ValueError("inspect_share requires path")
+        if payload.action in {"inspect_share", "inspect_corporate_share"} and not payload.path:
+            raise ValueError(f"{payload.action} requires path")
 
     async def _run(self, payload: ShareDiscoveryInput) -> ActionResult:
         target = {key: value for key, value in {"path": payload.path, "query": payload.query}.items() if value is not None}
@@ -44,6 +44,10 @@ class ShareDiscoveryTool(BaseTool):
                 details = await self.agent.inspect_share(payload.path or "", limit=payload.limit or 25)
                 exists = bool(details.get("exists"))
                 summary = f"Inspecionei {payload.path}." if exists else f"O caminho {payload.path} nao esta acessivel no momento."
+            elif payload.action == "inspect_corporate_share":
+                details = await self.agent.inspect_corporate_share(payload.path or "", limit=payload.limit or 50)
+                exists = bool(details.get("exists"))
+                summary = f"Inspecionei o share corporativo {payload.path}." if exists else f"O share corporativo {payload.path} nao esta acessivel no momento."
             elif payload.action == "discover_targets":
                 details = await self.agent.discover_targets(payload.query)
                 summary = f"Descobri {len(details.get('candidates') or [])} candidato(s) de share ou drive."

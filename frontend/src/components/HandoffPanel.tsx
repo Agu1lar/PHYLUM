@@ -2,9 +2,17 @@ import React, { useMemo, useState } from 'react'
 import { getApiBase } from '../lib/runtimeConfig'
 import { useStore } from '../state/store'
 
-const HandoffPanel: React.FC = () => {
+type HandoffPanelProps = {
+  showAllRuns?: boolean
+  compact?: boolean
+}
+
+const HandoffPanel: React.FC<HandoffPanelProps> = ({ showAllRuns = false, compact = false }) => {
+  const runs = useStore(state => state.runs)
   const currentRun = useStore(state => (state.currentRunId ? state.runs[state.currentRunId] : null))
-  const pendingHandoff = currentRun?.pending_handoff ?? null
+  const candidateRuns = showAllRuns ? Object.values(runs) : currentRun ? [currentRun] : []
+  const runWithHandoff = candidateRuns.find(run => run.pending_handoff)
+  const pendingHandoff = runWithHandoff?.pending_handoff ?? null
   const [text, setText] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const API_BASE = getApiBase()
@@ -15,15 +23,15 @@ const HandoffPanel: React.FC = () => {
   }, [pendingHandoff])
 
   async function respond(response: any) {
-    if (!currentRun || !pendingHandoff || submitting) return
+    if (!runWithHandoff || !pendingHandoff || submitting) return
     setSubmitting(true)
     try {
-      await fetch(`${API_BASE}/run/${encodeURIComponent(currentRun.request_id)}/reply`, {
+      await fetch(`${API_BASE}/run/${encodeURIComponent(runWithHandoff.request_id)}/reply`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ response }),
       })
-      await fetch(`${API_BASE}/run/${encodeURIComponent(currentRun.request_id)}/resume`, {
+      await fetch(`${API_BASE}/run/${encodeURIComponent(runWithHandoff.request_id)}/resume`, {
         method: 'POST',
       })
       setText('')
@@ -35,7 +43,7 @@ const HandoffPanel: React.FC = () => {
   }
 
   return (
-    <div className="rounded bg-gray-900 p-4">
+    <div className={`rounded bg-gray-900 ${compact ? 'p-3' : 'p-4'}`}>
       <h3 className="font-semibold">Handoff</h3>
       {!pendingHandoff ? (
         <div className="mt-2 text-sm text-gray-400">Nenhum handoff pendente.</div>
@@ -44,6 +52,7 @@ const HandoffPanel: React.FC = () => {
           <div className="rounded border border-amber-700 bg-amber-950/30 p-3">
             <div className="font-medium text-amber-100">{pendingHandoff.title}</div>
             <div className="mt-1 text-amber-50/90">{pendingHandoff.prompt}</div>
+            {showAllRuns && runWithHandoff ? <div className="mt-2 text-xs text-amber-200/70">Run: {runWithHandoff.request_id}</div> : null}
             {pendingHandoff.reason ? <div className="mt-2 text-xs text-amber-200/70">Motivo: {pendingHandoff.reason}</div> : null}
           </div>
           {pendingHandoff.options?.length ? (

@@ -7,6 +7,7 @@ const AgentPanel: React.FC = () => {
   const supportedTools = useStore(state => state.supportedTools)
   const tasks = currentRun?.tasks ?? []
   const completed = tasks.filter(task => task.status === 'completed').length
+  const activeGrants = (currentRun?.approval_grants ?? []).filter(grant => grant.status === 'active')
   const API_BASE = getApiBase()
   const isCancelable = currentRun ? !['completed', 'failed', 'cancelled'].includes(currentRun.status) : false
   const executionMode = currentRun?.reflection?.details?.execution_mode ?? currentRun?.outputs?.execution_mode ?? currentRun?.runtime_mode ?? 'agentic'
@@ -66,6 +67,10 @@ const AgentPanel: React.FC = () => {
               <div className="mt-1 font-medium">{currentRun.approvals.length}</div>
             </div>
             <div className="rounded bg-gray-900 p-3">
+              <div className="text-xs uppercase text-gray-500">Flow Grants</div>
+              <div className="mt-1 font-medium">{activeGrants.length}</div>
+            </div>
+            <div className="rounded bg-gray-900 p-3">
               <div className="text-xs uppercase text-gray-500">Runtime</div>
               <div className="mt-1 font-medium">{executionMode}</div>
             </div>
@@ -90,6 +95,21 @@ const AgentPanel: React.FC = () => {
                   ))}
                 </ul>
               ) : null}
+            </div>
+          ) : null}
+          {activeGrants.length ? (
+            <div className="rounded bg-gray-900 p-3">
+              <div className="text-xs uppercase text-gray-500">Active Flow Grants</div>
+              <div className="mt-2 space-y-2">
+                {activeGrants.map(grant => (
+                  <div key={grant.grant_id} className="rounded bg-gray-800 p-2">
+                    <div className="font-medium text-gray-100">{grant.title ?? 'Fluxo aprovado'}</div>
+                    <div className="mt-1 text-xs text-gray-400">
+                      {grant.family ?? grant.tool} | risco maximo: {grant.max_risk_level ?? 'medium'}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           ) : null}
           <div className="rounded bg-gray-900 p-3">

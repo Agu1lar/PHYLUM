@@ -1,9 +1,13 @@
 import unittest
-from unittest.mock import AsyncMock
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import AsyncMock, patch
 
 from planner_agent import PlannerAgent
 from policy_engine import PolicyEngine
 from tool_desktop import DesktopTool
+from windows_ui_agent import WindowsUiAgent
+from windows_ui_models import WindowsUiSelector
 
 
 class WindowsAutonomyPolicyTests(unittest.TestCase):
@@ -87,6 +91,59 @@ class WindowsAutonomyPolicyTests(unittest.TestCase):
         self.assertEqual(result["status"], "require_approval")
         self.assertTrue(result["approval"]["predicted_effects"][0]["requires_admin"])
 
+    def test_policy_uses_active_run_scope_grant_for_interactive_desktop(self):
+        engine = PolicyEngine()
+
+        result = engine.evaluate(
+            {
+                "runtime_mode": "agentic",
+                "approval_grants": [
+                    {
+                        "grant_id": "grant-1",
+                        "scope": "run_scope",
+                        "status": "active",
+                        "family": "interactive_desktop",
+                        "max_risk_level": "medium",
+                    }
+                ],
+                "current_task": {
+                    "id": "task-6",
+                    "tool": "windows_ui",
+                    "action": "invoke_element",
+                    "params": {"title": "Word", "selector": {"title": "Blank document"}},
+                },
+            }
+        )
+
+        self.assertEqual(result["status"], "allow")
+        self.assertEqual(result["grant"]["grant_id"], "grant-1")
+
+    def test_policy_does_not_use_run_scope_grant_for_kill_process(self):
+        engine = PolicyEngine()
+
+        result = engine.evaluate(
+            {
+                "runtime_mode": "agentic",
+                "approval_grants": [
+                    {
+                        "grant_id": "grant-1",
+                        "scope": "run_scope",
+                        "status": "active",
+                        "family": "interactive_desktop",
+                        "max_risk_level": "medium",
+                    }
+                ],
+                "current_task": {
+                    "id": "task-7",
+                    "tool": "desktop",
+                    "action": "kill_process",
+                    "params": {"process_name": "WINWORD.EXE"},
+                },
+            }
+        )
+
+        self.assertEqual(result["status"], "require_approval")
+
 
 class WindowsAutonomyPlannerAndToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_planner_routes_open_folder_to_open_path(self):
@@ -117,6 +174,116 @@ class WindowsAutonomyPlannerAndToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.issue.kind, "app_not_found")
         self.assertIn("could not resolve", result.summary)
+
+    async def test_windows_ui_invoke_falls_back_to_click_input(self):
+        agent = WindowsUiAgent()
+
+        class FakeTarget:
+            def __init__(self):
+                self.clicked = False
+
+            def set_focus(self):
+                return None
+
+            def invoke(self):
+                raise RuntimeError("invoke failed")
+
+            def click_input(self):
+                self.clicked = True
+
+        fake_target = FakeTarget()
+
+        with patch.object(agent, "_resolve_candidates", return_value=(None, [fake_target])), patch.object(
+            agent,
+            "_snapshot",
+            return_value=type("Snapshot", (), {"dict": lambda self: {"title": "Documento em branco"}})(),
+        ):
+            result = await agent.invoke_element(title="Word", selector={"title": "Documento em branco"})
+
+        self.assertTrue(fake_target.clicked)
+        self.assertEqual(result["method"], "click_input")
+
+    async def test_windows_ui_ranks_composite_anchors_before_escalating(self):
+        temp_dir = TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        agent = WindowsUiAgent(selector_memory_path=Path(temp_dir.name) / "selectors.json")
+
+        class FakeInfo:
+            def __init__(self, name, control_type, automation_id=None, class_name="Button", handle=None):
+                self.name = name
+                self.control_type = control_type
+                self.automation_id = automation_id
+                self.class_name = class_name
+                self.handle = handle
+                self.process_id = None
+
+        class FakeWrapper:
+            def __init__(self, name, control_type, automation_id=None, parent=None, handle=None):
+                self.element_info = FakeInfo(name, control_type, automation_id=automation_id, handle=handle)
+                self._parent = parent
+                self._children = []
+                if parent:
+                    parent._children.append(self)
+
+            def parent(self):
+                return self._parent
+
+            def children(self):
+                return list(self._children)
+
+            def descendants(self):
+                result = []
+                for child in self._children:
+                    result.append(child)
+                    result.extend(child.descendants())
+                return result
+
+            def is_enabled(self):
+                return True
+
+            def is_visible(self):
+                return True
+
+        window = FakeWrapper("Settings", "Window", handle=1)
+        account_panel = FakeWrapper("Account", "Pane", parent=window, handle=2)
+        billing_panel = FakeWrapper("Billing", "Pane", parent=window, handle=3)
+        FakeWrapper("Email", "Text", parent=account_panel, handle=4)
+        save_account = FakeWrapper("Save", "Button", parent=account_panel, handle=5)
+        save_billing = FakeWrapper("Save", "Button", parent=billing_panel, handle=6)
+
+        with patch.object(agent, "_resolve_window", return_value=window):
+            result = await agent.find_element(
+                title="Settings",
+                selector={"title": "Save", "control_type": "Button", "parent_title": "Account", "sibling_titles": ["Email"]},
+            )
+
+        self.assertTrue(result["ambiguity_resolved"])
+        self.assertEqual(result["best_match"]["hwnd"], 5)
+        self.assertGreater(result["best_match"]["match_score"], result["matches"][1]["match_score"])
+
+    def test_windows_ui_selector_matching_is_resilient_to_partial_titles(self):
+        agent = WindowsUiAgent()
+
+        element = type(
+            "Element",
+            (),
+            {
+                "title": "Save changes",
+                "control_type": "Button",
+                "auto_id": None,
+                "class_name": "Button",
+                "process_name": "app.exe",
+                "hwnd": 10,
+                "parent": {},
+                "ancestors": [],
+                "siblings": [],
+            },
+        )()
+
+        score, reasons = agent._score_selector(element, WindowsUiSelector(title="Save", control_type="Button"))
+
+        self.assertGreater(score, 0.7)
+        self.assertIn("title", reasons)
 
 
 if __name__ == "__main__":

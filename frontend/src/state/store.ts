@@ -26,6 +26,21 @@ export type RuntimeApproval = {
   risk?: any
   details?: any
   approval_mode?: string
+  resolved_scope?: string | null
+}
+export type RuntimeApprovalGrant = {
+  grant_id: string
+  request_id: string
+  scope: string
+  status: string
+  family?: string | null
+  tool?: string | null
+  action?: string | null
+  max_risk_level?: string | null
+  approved_at?: string | null
+  revoked_at?: string | null
+  title?: string | null
+  reason?: string | null
 }
 export type RuntimeHandoffOption = {
   id: string
@@ -59,6 +74,7 @@ export type RunRecord = {
   current_task_id?: string | null
   tasks: RuntimeTask[]
   approvals: RuntimeApproval[]
+  approval_grants: RuntimeApprovalGrant[]
   handoffs: RuntimeHandoff[]
   pending_handoff?: RuntimeHandoff | null
   events: RuntimeEvent[]
@@ -127,6 +143,7 @@ function ensureRun(
     status: 'queued',
     tasks: [],
     approvals: [],
+    approval_grants: [],
     handoffs: [],
     events: [],
   }
@@ -137,6 +154,7 @@ function ensureRun(
       ...patch,
       tasks: patch?.tasks ?? existing.tasks,
       approvals: patch?.approvals ?? existing.approvals,
+      approval_grants: patch?.approval_grants ?? existing.approval_grants,
       handoffs: patch?.handoffs ?? existing.handoffs,
       events: patch?.events ?? existing.events,
     },
@@ -159,6 +177,14 @@ function upsertApproval(approvals: RuntimeApproval[], approval: RuntimeApproval)
   return approvals.map(existing =>
     existing.approval_id === approval.approval_id ? { ...existing, ...approval } : existing,
   )
+}
+
+function upsertApprovalGrant(grants: RuntimeApprovalGrant[], grant: RuntimeApprovalGrant): RuntimeApprovalGrant[] {
+  const idx = grants.findIndex(existing => existing.grant_id === grant.grant_id)
+  if (idx === -1) {
+    return [...grants, grant]
+  }
+  return grants.map(existing => (existing.grant_id === grant.grant_id ? { ...existing, ...grant } : existing))
 }
 
 function upsertHandoff(handoffs: RuntimeHandoff[], handoff: RuntimeHandoff): RuntimeHandoff[] {
@@ -245,6 +271,7 @@ export const useStore = create<StoreState>((set, get) => ({
           events: runState.history ?? runState.events ?? [],
           tasks: runState.tasks ?? [],
           approvals: runState.approvals ?? [],
+          approval_grants: runState.approval_grants ?? [],
           handoffs: runState.handoffs ?? [],
           pending_handoff: runState.pending_handoff ?? null,
           recovery: runState.recovery ?? null,
@@ -264,6 +291,7 @@ export const useStore = create<StoreState>((set, get) => ({
         events: runState.history ?? [],
         tasks: runState.tasks ?? [],
         approvals: runState.approvals ?? [],
+          approval_grants: runState.approval_grants ?? [],
         handoffs: runState.handoffs ?? [],
         pending_handoff: runState.pending_handoff ?? null,
         recovery: runState.recovery ?? null,
@@ -296,6 +324,7 @@ export const useStore = create<StoreState>((set, get) => ({
         status: 'queued',
         tasks: [],
         approvals: [],
+        approval_grants: [],
         handoffs: [],
         events: [],
       }
@@ -349,13 +378,27 @@ export const useStore = create<StoreState>((set, get) => ({
             ...nextRun,
             approvals: nextRun.approvals.map(approval =>
               approval.approval_id === event.payload.approval_id
-                ? { ...approval, status: event.payload.status }
+                ? { ...approval, status: event.payload.status, resolved_scope: event.payload.scope ?? approval.resolved_scope }
                 : approval,
             ),
             tasks: nextRun.tasks.map(task =>
               task.id === event.payload.task_id
                 ? { ...task, status: event.payload.status === 'approved' ? 'approved' : 'rejected' }
                 : task,
+            ),
+          }
+          break
+        case 'approval_grant_created':
+          nextRun = {
+            ...nextRun,
+            approval_grants: upsertApprovalGrant(nextRun.approval_grants, event.payload.grant),
+          }
+          break
+        case 'approval_grant_revoked':
+          nextRun = {
+            ...nextRun,
+            approval_grants: nextRun.approval_grants.map(grant =>
+              grant.grant_id === event.payload.grant?.grant_id ? { ...grant, ...event.payload.grant } : grant,
             ),
           }
           break

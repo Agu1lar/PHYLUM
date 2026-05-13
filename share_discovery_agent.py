@@ -87,6 +87,45 @@ if ($exists) {{
         items = await asyncio.to_thread(_run_powershell_json, script)
         return items[0] if items else {"path": path, "exists": False, "items": [], "acl": None}
 
+    async def inspect_corporate_share(self, path: str, limit: int = 50) -> Dict[str, Any]:
+        base = await self.inspect_share(path, limit=limit)
+        path_literal = json.dumps(path)
+        script = f"""
+$path = {path_literal}
+$root = $null
+$server = $null
+$share = $null
+if ($path.StartsWith('\\\\')) {{
+  $parts = $path.TrimStart('\\').Split('\\')
+  if ($parts.Length -ge 2) {{
+    $server = $parts[0]
+    $share = $parts[1]
+    $root = '\\\\' + $server + '\\' + $share
+  }}
+}}
+$mapping = $null
+try {{
+  $mapping = Get-SmbMapping | Where-Object {{ $_.RemotePath -eq $root -or $path.StartsWith($_.RemotePath) }} | Select-Object -First 1 LocalPath, RemotePath, Status, UserName
+}} catch {{}}
+$dfs = $false
+try {{
+  if ($root) {{ $dfs = [bool](Get-DfsnFolderTarget -Path $root -ErrorAction SilentlyContinue) }}
+}} catch {{}}
+[pscustomobject]@{{
+  server = $server
+  share = $share
+  root = $root
+  mapping = $mapping
+  dfs_detected = $dfs
+  recommended_followups = @('document_intelligence.index_documents', 'share_discovery.inspect_share', 'desktop.explorer_navigate')
+}} | ConvertTo-Json -Depth 6 -Compress
+"""
+        details = await asyncio.to_thread(_run_powershell_json, script)
+        corporate = details[0] if details else {}
+        base["corporate"] = corporate
+        base["origin"] = corporate.get("root") or path
+        return base
+
     async def discover_targets(self, query: Optional[str] = None) -> Dict[str, Any]:
         query_literal = json.dumps(query or "")
         script = f"""

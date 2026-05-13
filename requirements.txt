@@ -13,3 +13,6 @@ pywin32
 pywinauto
 pypdf
 extract-msg
+pillow
+pytesseract
+pymupdf

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class OfficeInput(BaseModel):
     action: str = Field(
         ...,
-        pattern="^(open_document|export_pdf|save_as_document|list_workbook_sheets|draft_email_with_attachment|reveal_active_document_path)$",
+        pattern="^(open_document|export_pdf|save_as_document|list_workbook_sheets|word_find_text|excel_read_range|outlook_search_messages|draft_email_with_attachment|reveal_active_document_path)$",
     )
     path: Optional[str] = None
     output_path: Optional[str] = None
@@ -24,6 +24,10 @@ class OfficeInput(BaseModel):
     subject: Optional[str] = None
     body: Optional[str] = None
     attachment_path: Optional[str] = None
+    query: Optional[str] = None
+    sheet_name: Optional[str] = None
+    range_address: Optional[str] = None
+    limit: Optional[int] = None
 
 
 class OfficeTool(BaseTool):
@@ -37,6 +41,12 @@ class OfficeTool(BaseTool):
     async def validate(self, payload: OfficeInput) -> None:
         if payload.action in {"open_document", "export_pdf", "save_as_document", "list_workbook_sheets"} and not payload.path:
             raise ValueError(f"{payload.action} requires path")
+        if payload.action == "word_find_text" and (not payload.path or not payload.query):
+            raise ValueError("word_find_text requires path and query")
+        if payload.action == "excel_read_range" and not payload.path:
+            raise ValueError("excel_read_range requires path")
+        if payload.action == "outlook_search_messages" and not payload.query:
+            raise ValueError("outlook_search_messages requires query")
         if payload.action == "save_as_document" and not payload.output_path:
             raise ValueError("save_as_document requires output_path")
         if payload.action == "reveal_active_document_path" and not payload.app_name:
@@ -51,6 +61,9 @@ class OfficeTool(BaseTool):
                 "app_name": payload.app_name,
                 "to": payload.to,
                 "attachment_path": payload.attachment_path,
+                "query": payload.query,
+                "sheet_name": payload.sheet_name,
+                "range_address": payload.range_address,
             }.items()
             if value is not None
         }
@@ -70,6 +83,18 @@ class OfficeTool(BaseTool):
             elif payload.action == "list_workbook_sheets":
                 details = await self.agent.list_workbook_sheets(payload.path or "")
                 summary = f"Listei as planilhas do workbook {payload.path}."
+                changed = False
+            elif payload.action == "word_find_text":
+                details = await self.agent.word_find_text(payload.path or "", payload.query or "", limit=payload.limit or 20)
+                summary = f"Busquei texto no documento Word {payload.path}."
+                changed = False
+            elif payload.action == "excel_read_range":
+                details = await self.agent.excel_read_range(payload.path or "", sheet_name=payload.sheet_name, range_address=payload.range_address or "A1:Z50")
+                summary = f"Li um intervalo do workbook {payload.path}."
+                changed = False
+            elif payload.action == "outlook_search_messages":
+                details = await self.agent.outlook_search_messages(payload.query or "", limit=payload.limit or 25)
+                summary = f"Busquei mensagens no Outlook por {payload.query}."
                 changed = False
             elif payload.action == "draft_email_with_attachment":
                 details = await self.agent.draft_email_with_attachment(

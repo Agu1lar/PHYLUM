@@ -10,6 +10,8 @@ const threadEventTypes = new Set([
   'task_finished',
   'approval_requested',
   'approval_resolved',
+  'approval_grant_created',
+  'approval_grant_revoked',
   'user_input_requested',
   'user_input_received',
   'run_paused',
@@ -93,7 +95,13 @@ const ChatPanel: React.FC<{ showAdvanced?: boolean }> = ({ showAdvanced = true }
     }
   }
 
-  async function postApproval(id: string, status: 'approved' | 'rejected', confirmationLevel?: string) {
+  async function postApproval(
+    id: string,
+    status: 'approved' | 'rejected',
+    confirmationLevel?: string,
+    scope: 'single' | 'run_scope' = 'single',
+    requestId?: string,
+  ) {
     if (status === 'approved' && confirmationLevel === 'double' && confirmingApprovalId !== id) {
       setConfirmingApprovalId(id)
       return
@@ -103,8 +111,13 @@ const ChatPanel: React.FC<{ showAdvanced?: boolean }> = ({ showAdvanced = true }
       await fetch(`${API_BASE}/approval/${encodeURIComponent(id)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, scope }),
       })
+      if (requestId) {
+        await fetch(`${API_BASE}/run/${encodeURIComponent(requestId)}/resume`, {
+          method: 'POST',
+        })
+      }
     } catch (error) {
       console.error(error)
     }
@@ -144,6 +157,7 @@ const ChatPanel: React.FC<{ showAdvanced?: boolean }> = ({ showAdvanced = true }
       const approval = currentRun?.approvals.find(item => item.approval_id === approvalId) ?? event.payload?.approval
       const confirmationLevel = approval?.details?.confirmation_level ?? approval?.approval_mode ?? 'single'
       const predictedEffects = approval?.details?.predicted_effects ?? []
+      const availableScopes: string[] = approval?.details?.available_scopes ?? ['single']
       const command = approval?.details?.command
       const commandExplanation = approval?.details?.command_explanation
       return (
@@ -181,14 +195,23 @@ const ChatPanel: React.FC<{ showAdvanced?: boolean }> = ({ showAdvanced = true }
           <div className="mt-3 flex flex-wrap gap-2">
             <button
               disabled={approval?.status && approval.status !== 'pending'}
-              onClick={() => postApproval(approvalId, 'approved', confirmationLevel)}
+              onClick={() => postApproval(approvalId, 'approved', confirmationLevel, 'single', approval?.request_id)}
               className="rounded bg-green-600 px-3 py-2 text-sm disabled:opacity-50"
             >
-              {confirmationLevel === 'double' && confirmingApprovalId === approvalId ? 'Confirmar definitivamente' : 'Aprovar'}
+              {confirmationLevel === 'double' && confirmingApprovalId === approvalId ? 'Confirmar definitivamente' : 'Aprovar esta acao'}
             </button>
+            {availableScopes.includes('run_scope') ? (
+              <button
+                disabled={approval?.status && approval.status !== 'pending'}
+                onClick={() => postApproval(approvalId, 'approved', confirmationLevel, 'run_scope', approval?.request_id)}
+                className="rounded bg-emerald-700 px-3 py-2 text-sm disabled:opacity-50"
+              >
+                Aprovar este fluxo
+              </button>
+            ) : null}
             <button
               disabled={approval?.status && approval.status !== 'pending'}
-              onClick={() => postApproval(approvalId, 'rejected')}
+              onClick={() => postApproval(approvalId, 'rejected', confirmationLevel, 'single', approval?.request_id)}
               className="rounded bg-red-700 px-3 py-2 text-sm disabled:opacity-50"
             >
               Rejeitar
@@ -281,9 +304,12 @@ const ChatPanel: React.FC<{ showAdvanced?: boolean }> = ({ showAdvanced = true }
     }
 
     if (event.type === 'run_paused') {
+      const awaitingApproval = event.payload?.status === 'awaiting_approval'
       return (
         <div key={`${event.type}-${index}`} className="rounded border border-violet-900 bg-violet-950/20 p-3 text-sm text-violet-100">
-          A execucao ficou pausada aguardando sua resposta.
+          {awaitingApproval
+            ? 'A execucao ficou pausada aguardando uma aprovacao.'
+            : 'A execucao ficou pausada aguardando sua resposta.'}
         </div>
       )
     }
@@ -292,6 +318,22 @@ const ChatPanel: React.FC<{ showAdvanced?: boolean }> = ({ showAdvanced = true }
       return (
         <div key={`${event.type}-${index}`} className="rounded border border-gray-800 bg-gray-900/40 p-3 text-sm text-gray-300">
           Aprovacao {event.payload?.status === 'approved' ? 'aprovada' : 'rejeitada'}.
+        </div>
+      )
+    }
+
+    if (event.type === 'approval_grant_created') {
+      return (
+        <div key={`${event.type}-${index}`} className="rounded border border-emerald-900 bg-emerald-950/20 p-3 text-sm text-emerald-100">
+          Fluxo aprovado: as proximas acoes compativeis desta run podem continuar sem nova aprovacao.
+        </div>
+      )
+    }
+
+    if (event.type === 'approval_grant_revoked') {
+      return (
+        <div key={`${event.type}-${index}`} className="rounded border border-gray-700 bg-gray-900/50 p-3 text-sm text-gray-200">
+          O grant de fluxo foi revogado. Novas acoes sensiveis voltarao a pedir aprovacao.
         </div>
       )
     }

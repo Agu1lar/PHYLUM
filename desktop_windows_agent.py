@@ -361,6 +361,90 @@ def _open_path(path: str) -> Dict[str, Any]:
     return {"path": path, "opened": True}
 
 
+def _explorer_select_path(path: str) -> Dict[str, Any]:
+    target = Path(path)
+    if not target.exists():
+        raise FileNotFoundError(f"path not found: {path}")
+    subprocess.Popen(["explorer.exe", f"/select,{str(target)}"])
+    return {"path": str(target), "selected": True}
+
+
+def _explorer_navigate(path: str) -> Dict[str, Any]:
+    return _open_path(path)
+
+
+def _explorer_rename_path(path: str, new_name: str) -> Dict[str, Any]:
+    source = Path(path)
+    if not source.exists():
+        raise FileNotFoundError(f"path not found: {path}")
+    if not new_name or any(sep in new_name for sep in ("\\", "/")):
+        raise ValueError("new_name must be a file or folder name, not a path")
+    destination = source.with_name(new_name)
+    source.rename(destination)
+    return {"source_path": str(source), "output_path": str(destination)}
+
+
+def _explorer_copy_path(path: str, dest: str) -> Dict[str, Any]:
+    source = Path(path)
+    destination_root = Path(dest)
+    if not source.exists():
+        raise FileNotFoundError(f"path not found: {path}")
+    if not destination_root.exists():
+        raise FileNotFoundError(f"destination not found: {dest}")
+    destination = destination_root / source.name if destination_root.is_dir() else destination_root
+    if source.is_dir():
+        shutil.copytree(source, destination, dirs_exist_ok=True)
+    else:
+        shutil.copy2(source, destination)
+    return {"source_path": str(source), "output_path": str(destination)}
+
+
+def _explorer_move_path(path: str, dest: str) -> Dict[str, Any]:
+    source = Path(path)
+    destination_root = Path(dest)
+    if not source.exists():
+        raise FileNotFoundError(f"path not found: {path}")
+    if not destination_root.exists():
+        raise FileNotFoundError(f"destination not found: {dest}")
+    destination = destination_root / source.name if destination_root.is_dir() else destination_root
+    moved = shutil.move(str(source), str(destination))
+    return {"source_path": str(source), "output_path": moved}
+
+
+def _inspect_installer(path: str) -> Dict[str, Any]:
+    target = Path(path)
+    if not target.exists():
+        raise FileNotFoundError(f"path not found: {path}")
+    suffix = target.suffix.lower()
+    installer_type = {
+        ".msi": "msi",
+        ".msix": "msix",
+        ".appx": "appx",
+        ".exe": "exe",
+        ".inf": "driver_inf",
+    }.get(suffix, "unknown")
+    suggested_silent_args = {
+        "msi": ["/i", str(target), "/qn", "/norestart"],
+        "msix": ["Add-AppxPackage", "-Path", str(target)],
+        "appx": ["Add-AppxPackage", "-Path", str(target)],
+        "driver_inf": ["pnputil", "/add-driver", str(target), "/install"],
+        "exe": [str(target), "/quiet", "/norestart"],
+    }.get(installer_type, [])
+    return {
+        "path": str(target),
+        "extension": suffix,
+        "installer_type": installer_type,
+        "size": target.stat().st_size,
+        "requires_approval": True,
+        "suggested_silent_args": suggested_silent_args,
+        "setup_guidance": {
+            "prefer_domain_tool": "driver_manager.install_inf" if installer_type == "driver_inf" else None,
+            "mutation": True,
+            "needs_admin_likely": installer_type in {"msi", "msix", "appx", "driver_inf"},
+        },
+    }
+
+
 def _start_process_via_powershell(target: str, arguments: Optional[List[str]] = None) -> Dict[str, Any]:
     cmd = [target, *(arguments or [])]
     creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -477,6 +561,33 @@ class DesktopWindowsAgent:
                 for item in windows
             ]
         }
+
+    async def explorer_context(self) -> Dict[str, Any]:
+        windows = await asyncio.to_thread(_list_explorer_windows)
+        mapped = await asyncio.to_thread(_list_mapped_drives)
+        return {
+            "windows": [item.dict() for item in windows],
+            "mapped_drives": mapped,
+            "active_selection_count": sum(len(item.selected_items) for item in windows),
+        }
+
+    async def explorer_select_path(self, path: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(_explorer_select_path, path)
+
+    async def explorer_navigate(self, path: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(_explorer_navigate, path)
+
+    async def explorer_rename_path(self, path: str, new_name: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(_explorer_rename_path, path, new_name)
+
+    async def explorer_copy_path(self, path: str, dest: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(_explorer_copy_path, path, dest)
+
+    async def explorer_move_path(self, path: str, dest: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(_explorer_move_path, path, dest)
+
+    async def inspect_installer(self, path: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(_inspect_installer, path)
 
     async def open_app(
         self,

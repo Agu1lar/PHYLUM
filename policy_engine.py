@@ -6,8 +6,47 @@ from canonical_tools import action_metadata, supported_tools
 from risk_classifier import classify, normalize_command
 from tool_filesystem import is_allowed_path_for_action
 
+RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
+RUN_SCOPE_FAMILIES = {
+    "interactive_desktop": {"desktop", "windows_ui", "browser", "office"},
+    "workspace_access": {"filesystem", "share_discovery", "document_intelligence"},
+}
+INTERACTIVE_DESKTOP_BLOCKLIST = {
+    ("desktop", "close_window"),
+    ("desktop", "kill_process"),
+    ("desktop", "clipboard_set"),
+    ("desktop", "notify"),
+    ("desktop", "service_action"),
+}
+
 
 class PolicyEngine:
+    def grant_family(self, task: Dict[str, Any]) -> str:
+        tool = task.get("tool")
+        if tool in RUN_SCOPE_FAMILIES["interactive_desktop"]:
+            return "interactive_desktop"
+        if tool in RUN_SCOPE_FAMILIES["workspace_access"]:
+            return "workspace_access"
+        return f"tool:{tool}"
+
+    def supports_run_scope(self, task: Dict[str, Any], *, risk: Dict[str, Any] | None = None, metadata: Dict[str, Any] | None = None) -> bool:
+        tool = task.get("tool")
+        params = task.get("params") or {}
+        metadata = metadata or action_metadata(tool, task.get("action"))
+        risk = risk or self._risk_for(tool, task.get("action"), params, metadata)
+        if metadata.get("double_confirm"):
+            return False
+        if risk.get("level") == "high":
+            return False
+        if tool == "shell" and (risk.get("level") != "low" or bool(params.get("require_admin"))):
+            return False
+        if tool == "filesystem":
+            path = params.get("path")
+            dest = params.get("dest")
+            if (path and not is_allowed_path_for_action(path, task.get("action"))) or (dest and not is_allowed_path_for_action(dest, task.get("action"))):
+                return False
+        return metadata.get("approval_mode", "none") != "double"
+
     def evaluate(self, state: Dict[str, Any]) -> Dict[str, Any]:
         task = state["current_task"]
         tool = task.get("tool")
@@ -88,6 +127,22 @@ class PolicyEngine:
                 }
             ]
 
+        matching_grant = self._matching_grant(
+            state.get("approval_grants") or [],
+            task=task,
+            metadata=metadata,
+            risk=risk,
+            params=params,
+        )
+        if matching_grant is not None and requires_approval:
+            requires_approval = False
+            verdict["reason"] = "covered by active flow approval"
+            verdict["grant"] = {
+                "grant_id": matching_grant.get("grant_id"),
+                "scope": matching_grant.get("scope"),
+                "family": matching_grant.get("family"),
+            }
+
         if requires_approval:
             verdict["status"] = "require_approval"
             verdict["requires_approval"] = True
@@ -137,3 +192,51 @@ class PolicyEngine:
         if targets:
             return f"A acao {tool}.{action} vai atuar em: {targets}"
         return f"A acao {tool}.{action} requer sua aprovacao antes da execucao"
+
+    def _matching_grant(
+        self,
+        grants: List[Dict[str, Any]],
+        *,
+        task: Dict[str, Any],
+        metadata: Dict[str, Any],
+        risk: Dict[str, Any],
+        params: Dict[str, Any],
+    ) -> Dict[str, Any] | None:
+        for grant in grants:
+            if self._grant_allows(grant, task=task, metadata=metadata, risk=risk, params=params):
+                return grant
+        return None
+
+    def _grant_allows(
+        self,
+        grant: Dict[str, Any],
+        *,
+        task: Dict[str, Any],
+        metadata: Dict[str, Any],
+        risk: Dict[str, Any],
+        params: Dict[str, Any],
+    ) -> bool:
+        if grant.get("status") != "active":
+            return False
+        if grant.get("scope") != "run_scope":
+            return False
+        if metadata.get("double_confirm"):
+            return False
+        if RISK_ORDER.get(risk.get("level", "high"), 99) > RISK_ORDER.get(grant.get("max_risk_level", "medium"), 1):
+            return False
+        if params.get("require_admin"):
+            return False
+        tool = task.get("tool")
+        action = task.get("action")
+        family = grant.get("family")
+        if family == "interactive_desktop":
+            if tool not in RUN_SCOPE_FAMILIES["interactive_desktop"]:
+                return False
+            if (tool, action) in INTERACTIVE_DESKTOP_BLOCKLIST:
+                return False
+            return True
+        if family == "workspace_access":
+            if tool not in RUN_SCOPE_FAMILIES["workspace_access"]:
+                return False
+            return not metadata.get("mutates_state", False)
+        return grant.get("tool") == tool

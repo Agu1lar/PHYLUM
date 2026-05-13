@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class DriverInput(BaseModel):
     action: str = Field(
         ...,
-        pattern='^(list_devices|device_status|list_drivers|find_driver_candidates|install_inf|add_driver_package|rollback_driver|scan_hardware_changes|printer_status|printer_driver_info|restart_spooler)$',
+        pattern='^(list_devices|device_status|list_drivers|find_driver_candidates|install_inf|add_driver_package|rollback_driver|scan_hardware_changes|printer_status|printer_driver_info|printer_diagnostics|restart_spooler)$',
     )
     query: Optional[str] = None
     device_id: Optional[str] = None
@@ -111,6 +111,18 @@ class DriverManagerTool(BaseTool):
                 cmd = "Get-PrinterDriver | Select-Object Name, MajorVersion, DriverPath, InfPath | ConvertTo-Json -Depth 3"
             shell = "powershell"
             require_admin = False
+        elif payload.action == "printer_diagnostics":
+            query = payload.printer_name or payload.query or ""
+            filter_script = f"| Where-Object {{$_.Name -like '*{query}*'}}" if query else ""
+            cmd = (
+                "$spooler = Get-Service -Name Spooler | Select-Object Name, Status, StartType; "
+                f"$printers = Get-Printer {filter_script} | Select-Object Name, DriverName, PrinterStatus, PortName, Shared, ShareName; "
+                "$ports = Get-PrinterPort | Select-Object Name, PrinterHostAddress, PortNumber, Protocol; "
+                "$drivers = Get-PrinterDriver | Select-Object Name, MajorVersion, DriverPath, InfPath; "
+                "[pscustomobject]@{spooler=$spooler; printers=$printers; ports=$ports; drivers=$drivers} | ConvertTo-Json -Depth 5"
+            )
+            shell = "powershell"
+            require_admin = False
         elif payload.action == "restart_spooler":
             cmd = "Restart-Service -Name Spooler"
             shell = "powershell"
@@ -187,6 +199,18 @@ class DriverManagerTool(BaseTool):
                     semantic_type="inspection",
                     target=target,
                     data={"drivers": drivers, "raw_stdout": stdout},
+                    effects=ActionEffects(changed=False),
+                    diagnostics=diagnostics,
+                )
+            if payload.action == "printer_diagnostics":
+                return ActionResult(
+                    status="succeeded",
+                    summary="Coletei diagnosticos de impressoras, spooler, portas e drivers.",
+                    tool="driver_manager",
+                    action=payload.action,
+                    semantic_type="inspection",
+                    target=target,
+                    data={"diagnostics": parsed, "raw_stdout": stdout},
                     effects=ActionEffects(changed=False),
                     diagnostics=diagnostics,
                 )

@@ -3,7 +3,8 @@
   "identifier": "default",
   "description": "Default desktop capabilities for Agente Desktop.",
   "windows": [
-    "main"
+    "main",
+    "approval-widget"
   ],
   "permissions": [
     "core:default",

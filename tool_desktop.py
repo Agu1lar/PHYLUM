@@ -20,6 +20,12 @@ class DesktopTool(BaseTool):
     async def validate(self, payload: DesktopRequest) -> None:
         if payload.action in {"open_path", "open_file"} and not payload.path:
             raise ValueError(f"{payload.action} requires path")
+        if payload.action in {"explorer_select_path", "explorer_navigate", "inspect_installer"} and not payload.path:
+            raise ValueError(f"{payload.action} requires path")
+        if payload.action == "explorer_rename_path" and (not payload.path or not payload.new_name):
+            raise ValueError("explorer_rename_path requires path and new_name")
+        if payload.action in {"explorer_copy_path", "explorer_move_path"} and (not payload.path or not payload.dest):
+            raise ValueError(f"{payload.action} requires path and dest")
         if payload.action == "open_app" and not payload.app_name and not payload.app_path:
             raise ValueError("open_app requires app_name or app_path")
         if payload.action == "get_explorer_selection":
@@ -47,6 +53,8 @@ class DesktopTool(BaseTool):
                 "hwnd": payload.hwnd,
                 "title": payload.title,
                 "path": payload.path,
+                "dest": payload.dest,
+                "new_name": payload.new_name,
                 "app_name": payload.app_name,
                 "app_path": payload.app_path,
                 "process_name": payload.process_name,
@@ -56,10 +64,10 @@ class DesktopTool(BaseTool):
             }.items()
             if value is not None
         }
-        semantic_type = "mutation" if payload.action in {"close_window", "kill_process", "clipboard_set", "notify", "service_action"} else "inspection"
-        if payload.action in {"open_app", "open_path", "open_file", "focus_window"}:
+        semantic_type = "mutation" if payload.action in {"close_window", "kill_process", "clipboard_set", "notify", "service_action", "explorer_rename_path", "explorer_copy_path", "explorer_move_path"} else "inspection"
+        if payload.action in {"open_app", "open_path", "open_file", "focus_window", "explorer_select_path", "explorer_navigate"}:
             semantic_type = "execution"
-        changed = payload.action in {"close_window", "kill_process", "clipboard_set", "notify", "service_action"}
+        changed = payload.action in {"close_window", "kill_process", "clipboard_set", "notify", "service_action", "explorer_rename_path", "explorer_copy_path", "explorer_move_path"}
         try:
             if payload.action == "list_processes":
                 details = await self.agent.list_processes()
@@ -76,6 +84,27 @@ class DesktopTool(BaseTool):
             elif payload.action == "get_explorer_selection":
                 details = await self.agent.get_explorer_selection()
                 summary = "Capturei a selecao atual do Explorer."
+            elif payload.action == "explorer_context":
+                details = await self.agent.explorer_context()
+                summary = "Capturei o contexto aprofundado do Explorer."
+            elif payload.action == "explorer_select_path":
+                details = await self.agent.explorer_select_path(payload.path or "")
+                summary = f"Abri o Explorer selecionando {payload.path}."
+            elif payload.action == "explorer_navigate":
+                details = await self.agent.explorer_navigate(payload.path or "")
+                summary = f"Naveguei o Explorer para {payload.path}."
+            elif payload.action == "explorer_rename_path":
+                details = await self.agent.explorer_rename_path(payload.path or "", payload.new_name or "")
+                summary = f"Renomeei {payload.path}."
+            elif payload.action == "explorer_copy_path":
+                details = await self.agent.explorer_copy_path(payload.path or "", payload.dest or "")
+                summary = f"Copiei {payload.path}."
+            elif payload.action == "explorer_move_path":
+                details = await self.agent.explorer_move_path(payload.path or "", payload.dest or "")
+                summary = f"Movi {payload.path}."
+            elif payload.action == "inspect_installer":
+                details = await self.agent.inspect_installer(payload.path or "")
+                summary = f"Inspecionei o instalador {payload.path}."
             elif payload.action == "open_app":
                 details = await self.agent.open_app(
                     app_name=payload.app_name,

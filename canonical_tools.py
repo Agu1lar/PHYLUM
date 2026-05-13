@@ -20,6 +20,9 @@ SUPPORTED_TOOL_NAMES = [
     "share_discovery",
     "document_intelligence",
     "office",
+    "sandbox",
+    "artifact",
+    "dynamic_tool",
 ]
 
 DEFAULT_ACTION_METADATA: Dict[str, Any] = {
@@ -69,6 +72,29 @@ ACTION_METADATA: Dict[str, Dict[str, Any]] = {
         "upsert_entity": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["entity_type", "key"], "effect_kind": "memory_upsert_entity", "reversibility": "overwrite"},
         "query_entities": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["entity_type", "query"], "effect_kind": "memory_query_entities"},
         "record_observation": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["entity_type", "key"], "effect_kind": "memory_record_observation", "reversibility": "overwrite"},
+        "world_upsert": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["entity_type", "key"], "effect_kind": "world_upsert", "reversibility": "overwrite"},
+        "world_get": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["entity_type", "key"], "effect_kind": "world_get"},
+        "world_query": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["entity_type", "query"], "effect_kind": "world_query"},
+        "world_delete": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["entity_type", "key"], "effect_kind": "world_delete", "reversibility": "none"},
+        "world_touch": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["entity_type", "key"], "effect_kind": "world_touch", "reversibility": "overwrite"},
+        "world_prune": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["entity_type"], "effect_kind": "world_prune", "reversibility": "none"},
+        "world_types": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "world_types"},
+        "world_remember_share": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["key"], "effect_kind": "world_remember_share", "reversibility": "overwrite"},
+        "world_remember_app": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["key"], "effect_kind": "world_remember_app", "reversibility": "overwrite"},
+        "world_remember_alias": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["key"], "effect_kind": "world_remember_alias", "reversibility": "overwrite"},
+        "world_remember_selector": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["key"], "effect_kind": "world_remember_selector", "reversibility": "overwrite"},
+        "world_remember_path": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["key"], "effect_kind": "world_remember_path", "reversibility": "overwrite"},
+        "world_find_share": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["query"], "effect_kind": "world_find_share"},
+        "world_find_app": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["query"], "effect_kind": "world_find_app"},
+        "world_find_alias": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["query"], "effect_kind": "world_find_alias"},
+        "world_find_selector": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["query"], "effect_kind": "world_find_selector"},
+        "world_find_path": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["query"], "effect_kind": "world_find_path"},
+        "strategy_record_success": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["goal_type", "strategy_id"], "effect_kind": "strategy_record_success", "reversibility": "overwrite"},
+        "strategy_record_failure": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["goal_type"], "effect_kind": "strategy_record_failure", "reversibility": "overwrite"},
+        "strategy_find": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["goal_type", "query"], "effect_kind": "strategy_find"},
+        "strategy_best": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["goal_type"], "effect_kind": "strategy_best"},
+        "strategy_reused": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["goal_type", "strategy_id"], "effect_kind": "strategy_reused", "reversibility": "overwrite"},
+        "strategy_goal_types": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "strategy_goal_types"},
     },
     "browser": {
         "open_page": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["url"], "effect_kind": "open_page"},
@@ -115,6 +141,7 @@ ACTION_METADATA: Dict[str, Dict[str, Any]] = {
         "find_driver_candidates": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["query", "device_id", "printer_name"], "effect_kind": "find_driver_candidates"},
         "printer_status": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["query", "printer_name"], "effect_kind": "printer_status"},
         "printer_driver_info": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["query", "printer_name"], "effect_kind": "printer_driver_info"},
+        "printer_diagnostics": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["query", "printer_name"], "effect_kind": "printer_diagnostics"},
         "install_inf": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["path"], "effect_kind": "install_driver", "reversibility": "rollback_if_available"},
         "add_driver_package": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["path"], "effect_kind": "add_driver_package", "reversibility": "rollback_if_available"},
         "rollback_driver": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "double", "double_confirm": True, "target_fields": ["query", "device_id"], "effect_kind": "rollback_driver", "reversibility": "n/a"},
@@ -130,6 +157,13 @@ ACTION_METADATA: Dict[str, Dict[str, Any]] = {
         "list_explorer_windows": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "list_explorer_windows"},
         "list_mapped_drives": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "list_mapped_drives"},
         "get_explorer_selection": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "get_explorer_selection"},
+        "explorer_context": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "explorer_context"},
+        "explorer_select_path": {"semantic_type": "execution", "mutates_state": False, "approval_mode": "none", "target_fields": ["path"], "effect_kind": "explorer_select_path", "reversibility": "close_window"},
+        "explorer_navigate": {"semantic_type": "execution", "mutates_state": False, "approval_mode": "none", "target_fields": ["path"], "effect_kind": "explorer_navigate", "reversibility": "close_window"},
+        "explorer_rename_path": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["path", "new_name"], "effect_kind": "explorer_rename_path", "reversibility": "rename_back"},
+        "explorer_copy_path": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["path", "dest"], "effect_kind": "explorer_copy_path", "reversibility": "delete_output"},
+        "explorer_move_path": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["path", "dest"], "effect_kind": "explorer_move_path", "reversibility": "move_back"},
+        "inspect_installer": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["path"], "effect_kind": "inspect_installer"},
         "clipboard_get": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "clipboard_get"},
         "list_services": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "list_services"},
         "open_app": {"semantic_type": "execution", "mutates_state": False, "approval_mode": "none", "target_fields": ["app_name", "app_path"], "effect_kind": "open_app", "reversibility": "close_window"},
@@ -145,6 +179,7 @@ ACTION_METADATA: Dict[str, Dict[str, Any]] = {
     },
     "windows_ui": {
         "inspect_window": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["hwnd", "title", "process_name"], "effect_kind": "inspect_window"},
+        "inspect_dialog": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["hwnd", "title", "process_name"], "effect_kind": "inspect_dialog"},
         "list_elements": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["hwnd", "title", "process_name", "selector"], "effect_kind": "list_elements"},
         "find_element": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["hwnd", "title", "process_name", "selector", "element_id"], "effect_kind": "find_element"},
         "wait_for_element": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["hwnd", "title", "process_name", "selector", "element_id"], "effect_kind": "wait_for_element"},
@@ -167,8 +202,27 @@ ACTION_METADATA: Dict[str, Dict[str, Any]] = {
         "export_pdf": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["path", "output_path"], "effect_kind": "export_pdf", "reversibility": "delete_output"},
         "save_as_document": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["path", "output_path"], "effect_kind": "save_as_document", "reversibility": "delete_output"},
         "list_workbook_sheets": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["path"], "effect_kind": "list_workbook_sheets"},
+        "word_find_text": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["path", "query"], "effect_kind": "word_find_text"},
+        "excel_read_range": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["path", "sheet_name", "range_address"], "effect_kind": "excel_read_range"},
+        "outlook_search_messages": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["query"], "effect_kind": "outlook_search_messages"},
         "draft_email_with_attachment": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["to", "attachment_path"], "effect_kind": "draft_email_with_attachment", "reversibility": "discard_draft"},
         "reveal_active_document_path": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["app_name"], "effect_kind": "reveal_active_document_path"},
+    },
+    "sandbox": {
+        "execute_python": {"semantic_type": "execution", "mutates_state": True, "approval_mode": "single", "target_fields": ["code"], "effect_kind": "execute_python_script", "reversibility": "none"},
+        "execute_powershell": {"semantic_type": "execution", "mutates_state": True, "approval_mode": "single", "target_fields": ["code"], "effect_kind": "execute_powershell_script", "reversibility": "none"},
+    },
+    "artifact": {
+        "load": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["path"], "effect_kind": "load_artifact"},
+        "transform": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["path", "operation"], "effect_kind": "transform_artifact"},
+        "write_result": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["output_path"], "effect_kind": "write_artifact_result", "reversibility": "delete_output"},
+    },
+    "dynamic_tool": {
+        "create": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["name", "code"], "effect_kind": "create_dynamic_tool", "reversibility": "delete_tool"},
+        "list": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "list_dynamic_tools"},
+        "get": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["tool_id"], "effect_kind": "get_dynamic_tool"},
+        "execute": {"semantic_type": "execution", "mutates_state": True, "approval_mode": "single", "target_fields": ["tool_id"], "effect_kind": "execute_dynamic_tool", "reversibility": "none"},
+        "delete": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "double", "double_confirm": True, "target_fields": ["tool_id"], "effect_kind": "delete_dynamic_tool", "reversibility": "none"},
     },
 }
 
@@ -253,16 +307,38 @@ def tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "memory",
-                "description": "Store or retrieve structured memory entries.",
+                "description": "Store, retrieve and query structured memory, typed world model entities (shares, app paths, document aliases, selectors, path candidates) with confidence and expiration, and strategy history per goal type.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["set", "get", "delete", "list", "upsert_entity", "query_entities", "record_observation"]},
+                        "action": {
+                            "type": "string",
+                            "enum": [
+                                "set", "get", "delete", "list", "upsert_entity", "query_entities", "record_observation",
+                                "world_upsert", "world_get", "world_query", "world_delete", "world_touch", "world_prune", "world_types",
+                                "world_remember_share", "world_remember_app", "world_remember_alias", "world_remember_selector", "world_remember_path",
+                                "world_find_share", "world_find_app", "world_find_alias", "world_find_selector", "world_find_path",
+                                "strategy_record_success", "strategy_record_failure", "strategy_find", "strategy_best", "strategy_reused", "strategy_goal_types",
+                            ],
+                        },
                         "key": {"type": "string"},
                         "value": {"type": "object"},
-                        "entity_type": {"type": "string"},
+                        "entity_type": {"type": "string", "description": "Entity type (share, app_path, document_alias, selector, path_candidate, device, web_resource, user_preference, environment)"},
                         "attributes": {"type": "object"},
                         "query": {"type": "string"},
+                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0, "description": "Confidence score for the entity (0.0-1.0)"},
+                        "source": {"type": "string", "description": "Source of the entity (discovery, user, ui_automation, etc.)"},
+                        "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for filtering"},
+                        "ttl_seconds": {"type": "integer", "minimum": 1, "description": "Time-to-live in seconds (overrides entity type default)"},
+                        "app_context": {"type": "string", "description": "Application context for selectors"},
+                        "min_confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0, "description": "Minimum confidence filter for queries"},
+                        "boost_confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0, "description": "Amount to boost confidence on touch"},
+                        "strategy_id": {"type": "string", "description": "Strategy identifier for strategy_record_success/strategy_reused"},
+                        "goal_type": {"type": "string", "description": "Goal type for strategy actions (e.g. open_document, install_software, find_file)"},
+                        "goal_summary": {"type": "string", "description": "Human-readable summary of the goal"},
+                        "steps": {"type": "array", "items": {"type": "object"}, "description": "Tool call steps that form the strategy"},
+                        "error": {"type": "string", "description": "Error description for strategy_record_failure"},
+                        "duration_ms": {"type": "integer", "description": "Execution duration in milliseconds"},
                     },
                     "required": ["action"],
                     "additionalProperties": False,
@@ -408,6 +484,7 @@ def tool_definitions() -> List[Dict[str, Any]]:
                                 "scan_hardware_changes",
                                 "printer_status",
                                 "printer_driver_info",
+                                "printer_diagnostics",
                                 "restart_spooler",
                             ],
                         },
@@ -452,6 +529,13 @@ def tool_definitions() -> List[Dict[str, Any]]:
                                 "list_explorer_windows",
                                 "list_mapped_drives",
                                 "get_explorer_selection",
+                                "explorer_context",
+                                "explorer_select_path",
+                                "explorer_navigate",
+                                "explorer_rename_path",
+                                "explorer_copy_path",
+                                "explorer_move_path",
+                                "inspect_installer",
                                 "open_app",
                                 "open_path",
                                 "open_file",
@@ -471,6 +555,8 @@ def tool_definitions() -> List[Dict[str, Any]]:
                         "text": {"type": "string"},
                         "message": {"type": "string"},
                         "path": {"type": "string"},
+                        "dest": {"type": "string"},
+                        "new_name": {"type": "string"},
                         "app_name": {"type": "string"},
                         "app_path": {"type": "string"},
                         "arguments": {"type": "array", "items": {"type": "string"}},
@@ -497,6 +583,7 @@ def tool_definitions() -> List[Dict[str, Any]]:
                             "type": "string",
                             "enum": [
                                 "inspect_window",
+                                "inspect_dialog",
                                 "list_elements",
                                 "find_element",
                                 "wait_for_element",
@@ -536,7 +623,7 @@ def tool_definitions() -> List[Dict[str, Any]]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["list_mappings", "list_explorer_context", "inspect_share", "discover_targets"]},
+                        "action": {"type": "string", "enum": ["list_mappings", "list_explorer_context", "inspect_share", "inspect_corporate_share", "discover_targets"]},
                         "path": {"type": "string"},
                         "query": {"type": "string"},
                         "limit": {"type": "integer", "minimum": 1, "maximum": 200},
@@ -550,15 +637,28 @@ def tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "document_intelligence",
-                "description": "Inspect documents, extract text, search content and list recent document candidates across Office, PDF and mail formats.",
+                "description": "Inspect documents, OCR scanned PDFs/images, index/search local content, filter by metadata, and discover contracts, invoices, emails and attachments.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["inspect_document", "extract_text", "search_content", "recent_documents"]},
+                        "action": {
+                            "type": "string",
+                            "enum": [
+                                "inspect_document",
+                                "extract_text",
+                                "search_content",
+                                "index_documents",
+                                "search_index",
+                                "discover_documents",
+                                "recent_documents",
+                            ],
+                        },
                         "path": {"type": "string"},
                         "root": {"type": "string"},
                         "query": {"type": "string"},
                         "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                        "filters": {"type": "object"},
+                        "use_ocr": {"type": "boolean"},
                     },
                     "required": ["action"],
                     "additionalProperties": False,
@@ -580,6 +680,9 @@ def tool_definitions() -> List[Dict[str, Any]]:
                                 "export_pdf",
                                 "save_as_document",
                                 "list_workbook_sheets",
+                                "word_find_text",
+                                "excel_read_range",
+                                "outlook_search_messages",
                                 "draft_email_with_attachment",
                                 "reveal_active_document_path",
                             ],
@@ -591,6 +694,73 @@ def tool_definitions() -> List[Dict[str, Any]]:
                         "subject": {"type": "string"},
                         "body": {"type": "string"},
                         "attachment_path": {"type": "string"},
+                        "query": {"type": "string"},
+                        "sheet_name": {"type": "string"},
+                        "range_address": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sandbox",
+                "description": "Execute dynamic Python or PowerShell scripts in a controlled sandbox environment. Use this when no existing tool covers the task, or when the user needs custom data analysis, file transformation, automation scripts, or ad-hoc computations.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["execute_python", "execute_powershell"]},
+                        "code": {"type": "string", "description": "Script source code to execute"},
+                        "timeout": {"type": "integer", "minimum": 1, "maximum": 300},
+                        "work_dir": {"type": "string", "description": "Working directory override"},
+                        "input_files": {"type": "object", "description": "Files to create in sandbox before execution (name -> content)"},
+                    },
+                    "required": ["action", "code"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "artifact",
+                "description": "Load, read, transform and analyze files internally without opening them on the user's desktop. Supports text, CSV, JSON, PDF, DOCX, XLSX and MSG formats. Use this to process artifacts in memory and return results directly.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["load", "transform", "write_result"]},
+                        "path": {"type": "string", "description": "Path to file to load or transform"},
+                        "operation": {"type": "string", "enum": ["summarize", "extract_table", "filter_lines", "convert_json", "stats"], "description": "Transform operation"},
+                        "params": {"type": "object", "description": "Operation-specific parameters (e.g. pattern for filter_lines)"},
+                        "content": {"type": "string", "description": "Content to write (for write_result)"},
+                        "output_path": {"type": "string", "description": "Output file path (for write_result)"},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "dynamic_tool",
+                "description": "Create, manage and execute dynamic micro-tools. Use this to write and persist small purpose-built tools during a run to handle scenarios not covered by native tools. Created tools are reusable across runs.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["create", "list", "get", "execute", "delete"]},
+                        "name": {"type": "string", "description": "Tool name (for create)"},
+                        "description": {"type": "string", "description": "Tool description (for create)"},
+                        "code": {"type": "string", "description": "Tool source code with a run(params) function (for create)"},
+                        "language": {"type": "string", "enum": ["python", "powershell"], "description": "Language (for create)"},
+                        "tool_id": {"type": "string", "description": "Tool ID (for execute, delete, get)"},
+                        "params": {"type": "object", "description": "Execution parameters (for execute)"},
+                        "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags (for create)"},
+                        "tag": {"type": "string", "description": "Filter by tag (for list)"},
+                        "timeout": {"type": "integer", "minimum": 1, "maximum": 300, "description": "Execution timeout (for execute)"},
                     },
                     "required": ["action"],
                     "additionalProperties": False,
@@ -649,8 +819,8 @@ def task_title(tool: str, action: str, params: Dict[str, Any]) -> str:
     if tool == "filesystem":
         return f"{action.title()} {params.get('path') or params.get('dest') or params.get('request_id') or ''}".strip()
     if tool == "memory":
-        detail = params.get("key") or params.get("entity_type") or params.get("query") or ""
-        return f"{action.title()} memory {detail}".strip()
+        detail = params.get("key") or params.get("entity_type") or params.get("goal_type") or params.get("query") or params.get("strategy_id") or ""
+        return f"{action.replace('_', ' ').title()} {detail}".strip()
     if tool == "browser":
         target = params.get("url") or params.get("base_url") or params.get("selector") or params.get("title") or params.get("process_name") or ""
         return f"{action.replace('_', ' ').title()} {target}".strip()
@@ -695,6 +865,16 @@ def task_title(tool: str, action: str, params: Dict[str, Any]) -> str:
     if tool == "office":
         detail = params.get("path") or params.get("app_name") or params.get("output_path") or params.get("attachment_path") or ""
         return f"{action.replace('_', ' ').title()} {detail}".strip()
+    if tool == "sandbox":
+        lang = "Python" if action == "execute_python" else "PowerShell"
+        snippet = (params.get("code") or "")[:60]
+        return f"Run {lang} script: {snippet}".strip()
+    if tool == "artifact":
+        detail = params.get("path") or params.get("output_path") or params.get("operation") or ""
+        return f"{action.replace('_', ' ').title()} {detail}".strip()
+    if tool == "dynamic_tool":
+        detail = params.get("name") or params.get("tool_id") or ""
+        return f"{action.replace('_', ' ').title()} {detail}".strip()
     return f"{tool}:{action}"
 
 
@@ -716,7 +896,11 @@ def normalize_agentic_task(tool_name: str, arguments: Dict[str, Any], task_id: s
         params = {key: value for key, value in arguments.items() if key in {"path", "content", "dest", "pattern", "template", "request_id"} and value is not None}
     elif tool_name == "memory":
         action = arguments.get("action")
-        params = {key: value for key, value in arguments.items() if key in {"key", "value", "entity_type", "attributes", "query"} and value is not None}
+        params = {key: value for key, value in arguments.items() if key in {
+            "key", "value", "entity_type", "attributes", "query",
+            "confidence", "source", "tags", "ttl_seconds", "app_context", "min_confidence", "boost_confidence",
+            "strategy_id", "goal_type", "goal_summary", "steps", "error", "duration_ms",
+        } and value is not None}
     elif tool_name == "browser":
         action = arguments.get("action")
         params = {
@@ -759,6 +943,8 @@ def normalize_agentic_task(tool_name: str, arguments: Dict[str, Any], task_id: s
                 "text",
                 "message",
                 "path",
+                "dest",
+                "new_name",
                 "app_name",
                 "app_path",
                 "arguments",
@@ -783,10 +969,39 @@ def normalize_agentic_task(tool_name: str, arguments: Dict[str, Any], task_id: s
         params = {key: value for key, value in arguments.items() if key in {"path", "query", "limit"} and value is not None}
     elif tool_name == "document_intelligence":
         action = arguments.get("action")
-        params = {key: value for key, value in arguments.items() if key in {"path", "root", "query", "limit"} and value is not None}
+        params = {key: value for key, value in arguments.items() if key in {"path", "root", "query", "limit", "filters", "use_ocr"} and value is not None}
     elif tool_name == "office":
         action = arguments.get("action")
-        params = {key: value for key, value in arguments.items() if key in {"path", "output_path", "app_name", "to", "subject", "body", "attachment_path"} and value is not None}
+        params = {
+            key: value
+            for key, value in arguments.items()
+            if key in {"path", "output_path", "app_name", "to", "subject", "body", "attachment_path", "query", "sheet_name", "range_address", "limit"}
+            and value is not None
+        }
+    elif tool_name == "sandbox":
+        action = arguments.get("action")
+        params = {
+            key: value
+            for key, value in arguments.items()
+            if key in {"code", "timeout", "work_dir", "input_files"}
+            and value is not None
+        }
+    elif tool_name == "artifact":
+        action = arguments.get("action")
+        params = {
+            key: value
+            for key, value in arguments.items()
+            if key in {"path", "operation", "params", "content", "output_path"}
+            and value is not None
+        }
+    elif tool_name == "dynamic_tool":
+        action = arguments.get("action")
+        params = {
+            key: value
+            for key, value in arguments.items()
+            if key in {"name", "description", "code", "language", "tool_id", "params", "tags", "tag", "timeout"}
+            and value is not None
+        }
     else:
         raise ValueError(f"unsupported tool call: {tool_name}")
 

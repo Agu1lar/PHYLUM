@@ -15,6 +15,7 @@ from agent_persistence import Persistence
 from agentic_loop import AgenticLoop
 from canonical_tools import action_metadata, normalize_agentic_task, supported_tools as canonical_supported_tools, task_title
 from credential_store import CredentialStore
+from desktop_windows_agent import DesktopWindowsAgent
 from multi_provider_client import MultiProviderClient
 from nodes_reflection import ReflectionNode
 from nodes_safety import SafetyNode
@@ -23,6 +24,8 @@ from planner_agent import PlannerAgent
 from planner_models import Task
 from recovery_engine import RecoveryEngine
 from risk_classifier import explain_command, normalize_command
+from world_model import WorldModel
+from strategy_memory import StrategyMemory
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +71,9 @@ class RuntimeManager:
         self.reflection = ReflectionNode("reflection")
         self.recovery_engine = RecoveryEngine()
         self.action_executor = ActionExecutor(self)
+        self.desktop_agent = DesktopWindowsAgent()
+        self.world_model = WorldModel(self.persistence)
+        self.strategy_memory = StrategyMemory(self.persistence)
         self.agentic_loop = AgenticLoop(
             client=self.provider_client,
             safety=self.safety,
@@ -237,6 +243,22 @@ class RuntimeManager:
     async def list_approvals(self, request_id: Optional[str] = None) -> List[Dict[str, Any]]:
         return await self.persistence.list_approvals(request_id=request_id)
 
+    async def list_approval_grants(self, request_id: str) -> List[Dict[str, Any]]:
+        state = await self._ensure_active_state(request_id)
+        return list(state.get("approval_grants") or [])
+
+    async def revoke_approval_grant(self, request_id: str, grant_id: str) -> Dict[str, Any]:
+        state = await self._ensure_active_state(request_id)
+        for grant in state.get("approval_grants", []):
+            if grant.get("grant_id") == grant_id:
+                grant["status"] = "revoked"
+                grant["revoked_at"] = _now()
+                await self._persist_state(state)
+                payload = {"request_id": request_id, "grant": grant}
+                await self._emit("approval_grant_revoked", payload, state=state)
+                return payload
+        raise KeyError(grant_id)
+
     async def delete_run(self, request_id: str) -> Dict[str, Any]:
         state = self.active_runs.get(request_id)
         task = self.run_tasks.get(request_id)
@@ -335,22 +357,33 @@ class RuntimeManager:
         await self._emit("approval_requested", {"request_id": request_id, "approval": approval})
         return approval
 
-    async def resolve_approval(self, approval_id: str, status: str) -> Dict[str, Any]:
+    async def resolve_approval(self, approval_id: str, status: str, scope: str = "single") -> Dict[str, Any]:
         await self.persistence.set_approval(approval_id, status)
         approval = await self.persistence.get_approval(approval_id)
         if approval is None:
             raise KeyError(approval_id)
         request_id = approval.get("request_id")
         run_state = await self._ensure_active_state(request_id)
+        created_grant = None
         if run_state is not None:
+            runtime_approval = None
             for existing in run_state["approvals"]:
                 if existing["approval_id"] == approval_id:
                     existing["status"] = status
+                    existing["resolved_scope"] = scope
+                    runtime_approval = existing
             for task in run_state.get("tasks", []):
                 if task.get("approval_id") == approval_id:
                     task["approval_granted"] = status == "approved"
                     if status == "approved":
                         task["status"] = "approved"
+                        task["approval_scope"] = scope
+                        if scope == "run_scope":
+                            created_grant = self._activate_run_scope_grant(
+                                run_state,
+                                task,
+                                existing_approval=runtime_approval or approval.get("payload") or {},
+                            )
             await self._persist_state(run_state)
         waiter = self.approval_waiters.pop(approval_id, None)
         if waiter is not None and not waiter.done():
@@ -360,8 +393,12 @@ class RuntimeManager:
             "approval_id": approval_id,
             "status": status,
             "task_id": approval.get("task_id"),
+            "scope": scope,
+            "grant": created_grant,
         }
         await self._emit("approval_resolved", payload)
+        if created_grant is not None:
+            await self._emit("approval_grant_created", {"request_id": request_id, "grant": created_grant}, state=run_state)
         return payload
 
     def _new_state(
@@ -389,9 +426,15 @@ class RuntimeManager:
             "tasks": [],
             "history": [],
             "approvals": [],
+            "approval_grants": [],
             "handoffs": [],
             "pending_handoff": None,
             "agent_session": {},
+            "runtime_context": {
+                "window": None,
+                "ui_target": None,
+                "updated_at": None,
+            },
             "autonomy": {
                 "pending_subgoals": [],
                 "completed_subgoals": [],
@@ -853,6 +896,12 @@ class RuntimeManager:
         goal_verification: Optional[Dict[str, Any]] = None,
     ) -> None:
         action_result = ((result or {}).get("action_result") or {}) if result else {}
+        if result and action_result.get("status") in {"succeeded", "partial"}:
+            self._update_runtime_context(state, task, result)
+            try:
+                await self._auto_persist_world_model(task, result)
+            except Exception:
+                logger.debug("world model auto-persist failed for task %s", task.get("id"), exc_info=True)
         summary = action_result.get("summary") or (result or {}).get("tool_result", {}).get("message")
         observation = {
             "task_id": task.get("id"),
@@ -872,6 +921,68 @@ class RuntimeManager:
                 "goal_verification": goal_verification,
             },
         )
+
+    async def _auto_persist_world_model(self, task: Dict[str, Any], result: Dict[str, Any]) -> None:
+        """Automatically persist successful discoveries into the world model."""
+        action_result = (result.get("action_result") or {})
+        if action_result.get("status") != "succeeded":
+            return
+        tool = task.get("tool")
+        action = task.get("action")
+        params = task.get("params") or {}
+        tool_result = result.get("tool_result") or {}
+        details = tool_result.get("details") or tool_result
+
+        if tool == "share_discovery" and action in {"list_mappings", "inspect_share", "inspect_corporate_share"}:
+            mappings = details.get("mappings") or []
+            for mapping in mappings[:20]:
+                remote = mapping.get("RemotePath") or mapping.get("remote_path")
+                local = mapping.get("LocalPath") or mapping.get("local_path")
+                if remote:
+                    name = local or remote.rsplit("\\", 1)[-1]
+                    try:
+                        await self.world_model.remember_share(
+                            str(name), str(remote), local_path=str(local) if local else None,
+                            source="share_discovery",
+                        )
+                    except Exception:
+                        pass
+
+        if tool == "desktop" and action == "open_app":
+            app_name = params.get("app_name") or ""
+            app_path = params.get("app_path") or ""
+            if app_name or app_path:
+                try:
+                    await self.world_model.remember_app_path(
+                        app_name or app_path, app_path or app_name,
+                        source="desktop_open_app",
+                    )
+                except Exception:
+                    pass
+
+        if tool == "software_inventory" and action in {"find_executable", "find_install_location"}:
+            query = params.get("query") or ""
+            exe_path = details.get("path") or details.get("exe_path") or details.get("location") or ""
+            if query and exe_path:
+                try:
+                    await self.world_model.remember_app_path(query, str(exe_path), source="software_inventory")
+                except Exception:
+                    pass
+
+        if tool == "windows_ui" and action in {"find_element", "wait_for_element"}:
+            selector = params.get("selector") or {}
+            title = params.get("title") or ""
+            process_name = params.get("process_name") or ""
+            if selector:
+                selector_key = f"{process_name or title}:{selector.get('auto_id') or selector.get('title') or selector.get('control_type') or 'unknown'}"
+                try:
+                    await self.world_model.remember_selector(
+                        selector_key, selector,
+                        app_context=process_name or title,
+                        source="ui_automation",
+                    )
+                except Exception:
+                    pass
 
     def _verify_task_goal(self, task: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
         action_result = (result.get("action_result") or {}) if isinstance(result, dict) else {}
@@ -1000,6 +1111,9 @@ class RuntimeManager:
             "requires_approval": False,
             "approval_granted": False,
             "approval_id": None,
+            "approval_grant_id": None,
+            "approval_scope": None,
+            "pause_context": None,
             "result": None,
             "error": None,
             "reflection": None,
@@ -1064,7 +1178,153 @@ class RuntimeManager:
         if approval_meta.get("mode") == "double":
             reason = f"{reason}. Esta acao exige dupla confirmacao porque pode ser destrutiva ou dificil de reverter."
 
+        details["available_scopes"] = self._available_approval_scopes(task, safety)
         return {"title": title, "reason": reason, "details": details}
+
+    def _available_approval_scopes(self, task: Dict[str, Any], safety: Dict[str, Any]) -> List[str]:
+        scopes = ["single"]
+        if self.safety.policy.supports_run_scope(
+            task,
+            risk=safety.get("risk"),
+            metadata=(task.get("policy_metadata") or action_metadata(task.get("tool"), task.get("action"))),
+        ):
+            scopes.append("run_scope")
+        return scopes
+
+    def _grant_family(self, task: Dict[str, Any]) -> str:
+        return self.safety.policy.grant_family(task)
+
+    def _activate_run_scope_grant(self, state: Dict[str, Any], task: Dict[str, Any], *, existing_approval: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        available_scopes = (((existing_approval.get("details") or {}).get("available_scopes")) or [])
+        if "run_scope" not in available_scopes:
+            return None
+        family = self._grant_family(task)
+        for grant in state.get("approval_grants", []):
+            if grant.get("status") == "active" and grant.get("family") == family:
+                grant["last_used_at"] = _now()
+                task["approval_grant_id"] = grant["grant_id"]
+                return grant
+        grant = {
+            "grant_id": str(uuid.uuid4()),
+            "request_id": state["request_id"],
+            "scope": "run_scope",
+            "status": "active",
+            "family": family,
+            "tool": task.get("tool"),
+            "action": task.get("action"),
+            "max_risk_level": "medium",
+            "approved_at": _now(),
+            "approved_via_task_id": task.get("id"),
+            "approved_via_approval_id": task.get("approval_id"),
+            "title": f"Fluxo aprovado para {task.get('title')}",
+            "reason": "Grant ativo para continuar este fluxo sem novas aprovacoes compativeis.",
+        }
+        state.setdefault("approval_grants", []).append(grant)
+        task["approval_grant_id"] = grant["grant_id"]
+        return grant
+
+    def _context_window_from_value(self, value: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(value, dict):
+            return None
+        title = value.get("title")
+        process_name = value.get("process_name")
+        hwnd = value.get("hwnd")
+        if title is None and process_name is None and hwnd is None:
+            return None
+        return {
+            "hwnd": hwnd,
+            "title": title,
+            "process_name": process_name,
+        }
+
+    def _derive_runtime_context(self, task: Dict[str, Any], result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        params = task.get("params") or {}
+        action_result = ((result or {}).get("action_result") or {}) if result else {}
+        data = action_result.get("data") or {}
+        window = self._context_window_from_value(
+            {
+                "hwnd": params.get("hwnd"),
+                "title": params.get("title"),
+                "process_name": params.get("process_name"),
+            }
+        )
+        if not window:
+            window = self._context_window_from_value(data.get("window") or {})
+        if not window and isinstance(data.get("element"), dict):
+            window = self._context_window_from_value(data["element"])
+        if not window and task.get("tool") == "desktop" and task.get("action") == "open_app":
+            window = self._context_window_from_value(
+                {
+                    "process_name": data.get("process_name") or params.get("app_name"),
+                    "title": params.get("app_name"),
+                }
+            )
+        ui_target = {
+            key: value
+            for key, value in {
+                "selector": params.get("selector"),
+                "element_id": params.get("element_id"),
+                "title": params.get("title"),
+                "process_name": params.get("process_name"),
+                "hwnd": params.get("hwnd"),
+            }.items()
+            if value is not None
+        }
+        if not ui_target and isinstance(data.get("element"), dict):
+            element = data["element"]
+            ui_target = {
+                key: value
+                for key, value in {
+                    "element_id": element.get("element_id"),
+                    "title": element.get("title"),
+                    "process_name": element.get("process_name"),
+                    "hwnd": element.get("hwnd"),
+                }.items()
+                if value is not None
+            }
+        return {"window": window, "ui_target": ui_target or None, "updated_at": _now()}
+
+    def _update_runtime_context(self, state: Dict[str, Any], task: Dict[str, Any], result: Optional[Dict[str, Any]] = None) -> None:
+        context = self._derive_runtime_context(task, result)
+        runtime_context = state.setdefault("runtime_context", {"window": None, "ui_target": None, "updated_at": None})
+        if context.get("window"):
+            runtime_context["window"] = context["window"]
+        if context.get("ui_target"):
+            runtime_context["ui_target"] = context["ui_target"]
+        runtime_context["updated_at"] = context["updated_at"]
+
+    def _capture_pause_context(self, state: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
+        derived = self._derive_runtime_context(task)
+        runtime_context = state.get("runtime_context") or {}
+        pause_context = {
+            "window": derived.get("window") or runtime_context.get("window"),
+            "ui_target": derived.get("ui_target") or runtime_context.get("ui_target"),
+            "captured_at": _now(),
+        }
+        task["pause_context"] = pause_context
+        return pause_context
+
+    async def _restore_execution_context(self, state: Dict[str, Any], task: Dict[str, Any]) -> None:
+        if task.get("tool") not in {"desktop", "windows_ui", "office", "browser"}:
+            return
+        context = task.get("pause_context") or state.get("runtime_context") or {}
+        window = context.get("window") or {}
+        if not isinstance(window, dict) or not any(window.get(key) for key in ("hwnd", "title", "process_name")):
+            return
+        try:
+            if window.get("hwnd") or window.get("title"):
+                await self.desktop_agent.focus_window(hwnd=window.get("hwnd"), title=window.get("title"))
+                return
+            if window.get("process_name"):
+                match = await self.desktop_agent.wait_for_window(process_name=window["process_name"], timeout_seconds=3)
+                matched_window = (match.get("window") or {}) if isinstance(match, dict) else {}
+                if matched_window.get("hwnd") or matched_window.get("title"):
+                    await self.desktop_agent.focus_window(
+                        hwnd=matched_window.get("hwnd"),
+                        title=matched_window.get("title"),
+                    )
+        except Exception:
+            logger.debug("Unable to restore execution context before continuing task %s", task.get("id"), exc_info=True)
 
     async def _create_runtime_approval(self, state: Dict[str, Any], task: Dict[str, Any], safety: Dict[str, Any]) -> Dict[str, Any]:
         approval_id = str(uuid.uuid4())
@@ -1092,6 +1352,16 @@ class RuntimeManager:
             task_id=task["id"],
         )
         await self._emit("approval_requested", {"request_id": state["request_id"], "approval": approval}, state=state)
+        await self._emit(
+            "run_paused",
+            {
+                "request_id": state["request_id"],
+                "status": "awaiting_approval",
+                "approval_id": approval_id,
+                "task_id": task["id"],
+            },
+            state=state,
+        )
         return approval
 
     async def _wait_for_approval(self, approval_id: str) -> str:

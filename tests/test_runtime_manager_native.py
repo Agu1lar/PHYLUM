@@ -236,3 +236,76 @@ async def test_runtime_manager_allows_partial_local_desktop_launch(monkeypatch, 
     assert final_state["tasks"][0]["status"] == "partial"
     assert final_state["outputs"]["final_reflection"]["verdict"] == "success"
     assert any(event["type"] == "task_finished" and event["payload"]["status"] == "partial" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_runtime_manager_creates_run_scope_grant_from_approval(isolated_persistence):
+    events = []
+
+    async def emitter(message):
+        events.append(message)
+
+    manager = RuntimeManager(emitter)
+    state = manager._new_state("run-1", {"text": "preencher documento"}, runtime_mode="agentic", provider=None, model=None)
+    task = {
+        "id": "task-approval",
+        "title": "Preencher campo do Word",
+        "tool": "windows_ui",
+        "action": "set_text",
+        "params": {"title": "Word", "process_name": "WINWORD.EXE", "selector": {"title": "Nome"}, "text": "Maria"},
+        "policy_metadata": {"approval_mode": "single"},
+        "status": "waiting_approval",
+        "attempt": 0,
+        "approval_id": "approval-1",
+        "approval_granted": False,
+    }
+    approval = {
+        "approval_id": "approval-1",
+        "request_id": "run-1",
+        "task_id": "task-approval",
+        "title": "Approve task",
+        "reason": "Confirmar alteracao",
+        "status": "pending",
+        "risk": {"level": "medium"},
+        "details": {"available_scopes": ["single", "run_scope"]},
+        "approval_mode": "single",
+    }
+    state["tasks"] = [task]
+    state["approvals"] = [approval]
+    manager.active_runs["run-1"] = state
+    await manager.persistence.create_approval("approval-1", "run-1", "", approval, task_id="task-approval")
+
+    result = await manager.resolve_approval("approval-1", "approved", scope="run_scope")
+
+    assert result["scope"] == "run_scope"
+    assert result["grant"]["status"] == "active"
+    assert state["approval_grants"][0]["family"] == "interactive_desktop"
+    assert any(event["type"] == "approval_grant_created" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_runtime_manager_restores_focus_before_continuing(monkeypatch, isolated_persistence):
+    async def emitter(_message):
+        return None
+
+    manager = RuntimeManager(emitter)
+    focus_calls = []
+
+    async def fake_focus_window(*, hwnd=None, title=None):
+        focus_calls.append({"hwnd": hwnd, "title": title})
+        return {"window": {"hwnd": hwnd, "title": title}}
+
+    monkeypatch.setattr(manager.desktop_agent, "focus_window", fake_focus_window)
+
+    state = manager._new_state("run-ctx", {"text": "continuar word"}, runtime_mode="agentic", provider=None, model=None)
+    task = {
+        "id": "task-ctx",
+        "tool": "windows_ui",
+        "action": "invoke_element",
+        "params": {"selector": {"title": "Documento em branco"}},
+        "pause_context": {"window": {"title": "Word"}, "ui_target": {"selector": {"title": "Documento em branco"}}},
+    }
+
+    await manager._restore_execution_context(state, task)
+
+    assert focus_calls == [{"hwnd": None, "title": "Word"}]

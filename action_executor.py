@@ -22,10 +22,21 @@ class ActionExecutor:
             await self.runtime._set_run_status(state, "running", current_node="policy")
             effective_runtime_mode = state.get("runtime_mode") if self._is_agentic_task(state, task) else "heuristic"
             safety_result = await self.runtime.safety.execute(
-                {"inputs": state["inputs"], "current_task": task, "runtime_mode": effective_runtime_mode}
+                {
+                    "inputs": state["inputs"],
+                    "current_task": task,
+                    "runtime_mode": effective_runtime_mode,
+                    "approval_grants": state.get("approval_grants") or [],
+                }
             )
             task["safety"] = safety_result["safety"]
-            if state["inputs"].get("force_approval") and safety_result["safety"]["status"] == "allow":
+            if safety_result["safety"].get("grant"):
+                task["approval_grant_id"] = safety_result["safety"]["grant"].get("grant_id")
+            if (
+                state["inputs"].get("force_approval")
+                and safety_result["safety"]["status"] == "allow"
+                and not safety_result["safety"].get("grant")
+            ):
                 safety_result["safety"]["status"] = "require_approval"
                 safety_result["safety"]["requires_approval"] = True
                 safety_result["safety"]["reason"] = "run configured to await human approval"
@@ -45,6 +56,7 @@ class ActionExecutor:
             if safety_result["safety"]["status"] == "require_approval":
                 approval_status = self.runtime._resolved_approval_status(state, task["id"])
                 if approval_status is None:
+                    self.runtime._capture_pause_context(state, task)
                     task["status"] = "waiting_approval"
                     await self.runtime._set_run_status(state, "awaiting_approval", current_node="approval")
                     approval = await self.runtime._create_runtime_approval(state, task, safety_result["safety"])
@@ -91,6 +103,7 @@ class ActionExecutor:
                 task["attempt"] = int(task.get("attempt") or 0) + 1
                 task["status"] = "running"
                 await self.runtime._set_run_status(state, "running", current_node="tool_execution")
+                await self.runtime._restore_execution_context(state, task)
                 await self.runtime._emit("task_started", {"request_id": state["request_id"], "task": task}, state=state)
                 self.runtime._raise_if_cancelled(state)
                 result = await self.runtime.tool_router.execute(

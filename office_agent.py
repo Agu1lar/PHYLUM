@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 try:  # pragma: no cover - optional dependency
     import pythoncom
@@ -116,6 +116,77 @@ class OfficeAgent:
             workbook.Close(False)
             app.Quit()
             return {"path": workbook_path, "sheets": sheets}
+
+        return await asyncio.to_thread(_run)
+
+    async def word_find_text(self, path: str, query: str, limit: int = 20) -> Dict[str, Any]:
+        def _run() -> Dict[str, Any]:
+            document_path = str(Path(path).resolve())
+            app = self._dispatch("Word.Application")
+            app.Visible = False
+            document = app.Documents.Open(document_path)
+            text = document.Content.Text
+            matches: List[Dict[str, Any]] = []
+            lowered = text.lower()
+            needle = query.lower()
+            start = 0
+            while needle and len(matches) < limit:
+                idx = lowered.find(needle, start)
+                if idx < 0:
+                    break
+                excerpt = text[max(idx - 120, 0): idx + len(query) + 180]
+                matches.append({"offset": idx, "excerpt": excerpt.strip()})
+                start = idx + len(query)
+            document.Close(False)
+            app.Quit()
+            return {"path": document_path, "query": query, "matches": matches}
+
+        return await asyncio.to_thread(_run)
+
+    async def excel_read_range(self, path: str, sheet_name: Optional[str] = None, range_address: str = "A1:Z50") -> Dict[str, Any]:
+        def _run() -> Dict[str, Any]:
+            workbook_path = str(Path(path).resolve())
+            app = self._dispatch("Excel.Application")
+            app.Visible = False
+            workbook = app.Workbooks.Open(workbook_path)
+            sheet = workbook.Worksheets(sheet_name) if sheet_name else workbook.ActiveSheet
+            values = sheet.Range(range_address).Value
+            workbook.Close(False)
+            app.Quit()
+            rows = values if isinstance(values, tuple) else ((values,),)
+            return {"path": workbook_path, "sheet": sheet_name or sheet.Name, "range": range_address, "values": rows}
+
+        return await asyncio.to_thread(_run)
+
+    async def outlook_search_messages(self, query: str, limit: int = 25) -> Dict[str, Any]:
+        def _run() -> Dict[str, Any]:
+            app = self._dispatch("Outlook.Application")
+            namespace = app.GetNamespace("MAPI")
+            inbox = namespace.GetDefaultFolder(6)
+            items = inbox.Items
+            items.Sort("[ReceivedTime]", True)
+            matches: List[Dict[str, Any]] = []
+            lowered_query = query.lower()
+            for item in items:
+                try:
+                    haystack = f"{getattr(item, 'Subject', '')}\n{getattr(item, 'SenderName', '')}\n{getattr(item, 'Body', '')}".lower()
+                    if lowered_query in haystack:
+                        attachments = []
+                        for idx in range(1, item.Attachments.Count + 1):
+                            attachments.append(item.Attachments.Item(idx).FileName)
+                        matches.append(
+                            {
+                                "subject": item.Subject,
+                                "sender": item.SenderName,
+                                "received_time": str(item.ReceivedTime),
+                                "attachments": attachments,
+                            }
+                        )
+                except Exception:
+                    continue
+                if len(matches) >= limit:
+                    break
+            return {"query": query, "matches": matches}
 
         return await asyncio.to_thread(_run)
 

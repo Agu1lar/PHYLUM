@@ -20,7 +20,7 @@ class WindowsUiTool(BaseTool):
         self.agent = WindowsUiAgent()
 
     async def validate(self, payload: WindowsUiRequest) -> None:
-        if payload.action in {"inspect_window", "list_elements", "find_element", "wait_for_element", "invoke_element", "set_text", "select_item", "scroll", "read_element_text"}:
+        if payload.action in {"inspect_window", "inspect_dialog", "list_elements", "find_element", "wait_for_element", "invoke_element", "set_text", "select_item", "scroll", "read_element_text"}:
             if payload.hwnd is None and not payload.title and not payload.process_name:
                 raise ValueError(f"{payload.action} requires hwnd, title or process_name")
         if payload.action in {"find_element", "wait_for_element", "invoke_element", "set_text", "select_item", "scroll", "read_element_text"} and not payload.selector and not payload.element_id:
@@ -69,6 +69,15 @@ class WindowsUiTool(BaseTool):
                     max_results=payload.max_results or 25,
                 )
                 return self._success_result(payload, "Inspecionei a janela solicitada.", details)
+            if payload.action == "inspect_dialog":
+                details = await self.agent.inspect_dialog(
+                    hwnd=payload.hwnd,
+                    title=payload.title,
+                    process_name=payload.process_name,
+                    include_children=payload.include_children,
+                    max_results=payload.max_results or 50,
+                )
+                return self._success_result(payload, "Inspecionei e classifiquei o dialogo nativo.", details)
             if payload.action == "list_elements":
                 details = await self.agent.list_elements(
                     hwnd=payload.hwnd,
@@ -103,7 +112,7 @@ class WindowsUiTool(BaseTool):
                         issue=ActionIssue(kind="element_not_found", message="No matching UI element was found."),
                         diagnostics={"backend": "pywinauto"},
                     )
-                if len(matches) > 1:
+                if len(matches) > 1 and not details.get("ambiguity_resolved"):
                     return ActionResult(
                         status="needs_input",
                         summary="Encontrei mais de um elemento possivel para este seletor.",
@@ -121,7 +130,11 @@ class WindowsUiTool(BaseTool):
                         ),
                         diagnostics={"backend": "pywinauto"},
                     )
-                return self._success_result(payload, "Elemento encontrado.", {"element": matches[0], "matches": matches})
+                element = details.get("best_match") or matches[0]
+                summary = "Elemento encontrado."
+                if len(matches) > 1:
+                    summary = "Elemento encontrado por ranking de contexto sem precisar de escolha manual."
+                return self._success_result(payload, summary, {"element": element, **details})
             if payload.action == "wait_for_element":
                 details = await self.agent.wait_for_element(
                     hwnd=payload.hwnd,

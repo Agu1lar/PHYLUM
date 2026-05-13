@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import ApprovalWidgetWindow from './components/ApprovalWidgetWindow'
 import Layout from './components/Layout'
 import AgentPanel from './components/AgentPanel'
 import ChatPanel from './components/ChatPanel'
@@ -7,12 +8,13 @@ import SettingsPanel from './components/SettingsPanel'
 import TasksPanel from './components/TasksPanel'
 import useSocket from './hooks/useSocket'
 import { ensureDesktopBackend } from './lib/desktopHost'
-import { getApiBase, isDesktopApp } from './lib/runtimeConfig'
+import { getApiBase, isDesktopApp, subscribeRuntimeConnectionConfig } from './lib/runtimeConfig'
 import { useStore } from './state/store'
 
 export default function App() {
   useSocket()
   const API_BASE = getApiBase()
+  const widgetMode = new URLSearchParams(window.location.search).get('widget') === 'approval'
   const connected = useStore(state => state.connected)
   const activeView = useStore(state => state.activeView)
   const showAdvanced = useStore(state => state.showAdvanced)
@@ -29,37 +31,54 @@ export default function App() {
   const removeRun = useStore(state => state.removeRun)
   const [installerAvailable, setInstallerAvailable] = useState(false)
   const [checkingInstaller, setCheckingInstaller] = useState(true)
+  const [configVersion, setConfigVersion] = useState(0)
+
+  useEffect(() => {
+    return subscribeRuntimeConnectionConfig(() => {
+      setConfigVersion(version => version + 1)
+    })
+  }, [])
 
   useEffect(() => {
     const loadBootstrap = async () => {
-      try {
-        await ensureDesktopBackend()
-        const [providerResponse, toolsResponse, runsResponse] = await Promise.all([
-          fetch(`${API_BASE}/settings/providers`),
-          fetch(`${API_BASE}/tools`),
-          fetch(`${API_BASE}/runs`),
-        ])
-        if (!providerResponse.ok) {
-          throw new Error(`settings request failed: ${providerResponse.status}`)
+      const attempts = widgetMode ? 40 : 6
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        try {
+          if (!widgetMode) {
+            await ensureDesktopBackend()
+          }
+          const [providerResponse, toolsResponse, runsResponse] = await Promise.all([
+            fetch(`${API_BASE}/settings/providers`),
+            fetch(`${API_BASE}/tools`),
+            fetch(`${API_BASE}/runs`),
+          ])
+          if (!providerResponse.ok) {
+            throw new Error(`settings request failed: ${providerResponse.status}`)
+          }
+          if (!toolsResponse.ok) {
+            throw new Error(`tools request failed: ${toolsResponse.status}`)
+          }
+          if (!runsResponse.ok) {
+            throw new Error(`runs request failed: ${runsResponse.status}`)
+          }
+          const providerData = await providerResponse.json()
+          const toolsData = await toolsResponse.json()
+          const runsData = await runsResponse.json()
+          setProviderSettings(providerData.providers ?? [])
+          setSupportedTools(toolsData.tools ?? [])
+          setRunsFromList(runsData.runs ?? [])
+          return
+        } catch (error) {
+          if (attempt === attempts - 1) {
+            console.error(error)
+            return
+          }
+          await new Promise(resolve => window.setTimeout(resolve, widgetMode ? 500 : 250))
         }
-        if (!toolsResponse.ok) {
-          throw new Error(`tools request failed: ${toolsResponse.status}`)
-        }
-        if (!runsResponse.ok) {
-          throw new Error(`runs request failed: ${runsResponse.status}`)
-        }
-        const providerData = await providerResponse.json()
-        const toolsData = await toolsResponse.json()
-        const runsData = await runsResponse.json()
-        setProviderSettings(providerData.providers ?? [])
-        setSupportedTools(toolsData.tools ?? [])
-        setRunsFromList(runsData.runs ?? [])
-      } catch (error) {
-        console.error(error)
       }
     }
     void loadBootstrap()
-  }, [API_BASE, setProviderSettings, setRunsFromList, setSupportedTools])
+  }, [API_BASE, configVersion, setProviderSettings, setRunsFromList, setSupportedTools, widgetMode])
 
   useEffect(() => {
     const loadInstallerState = async () => {
@@ -79,7 +98,7 @@ export default function App() {
       }
     }
     void loadInstallerState()
-  }, [API_BASE])
+  }, [API_BASE, configVersion])
 
   const statusPill = useMemo(() => {
     if (!connected) return 'Desconectado'
@@ -114,6 +133,10 @@ export default function App() {
 
   function downloadInstaller() {
     window.open(`${API_BASE}/downloads/windows-installer`, '_blank')
+  }
+
+  if (widgetMode) {
+    return <ApprovalWidgetWindow />
   }
 
   return (

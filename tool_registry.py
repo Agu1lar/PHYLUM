@@ -8,16 +8,19 @@ from pydantic import BaseModel, ValidationError
 
 from action_models import ActionEffects, ActionIssue, ActionResult
 from canonical_tools import action_metadata, supported_tools
+from tool_artifact import ArtifactTool
 from tool_browser import BrowserTool
 from tool_desktop import DesktopTool
 from tool_driver import DriverManagerTool
 from tool_document_intelligence import DocumentIntelligenceTool
+from tool_dynamic import DynamicToolTool
 from tool_env import EnvManagerTool
 from tool_filesystem import FileSystemTool
 from tool_memory import MemoryTool
 from tool_office import OfficeTool
 from tool_os import OSIntrospectionTool
 from tool_package import PackageManagerTool
+from tool_sandbox import SandboxTool
 from tool_share_discovery import ShareDiscoveryTool
 from tool_shell import ShellTool
 from tool_software import SoftwareInventoryTool
@@ -53,6 +56,9 @@ class ToolRegistry:
             "share_discovery": ShareDiscoveryTool(),
             "document_intelligence": DocumentIntelligenceTool(),
             "office": OfficeTool(),
+            "sandbox": SandboxTool(),
+            "artifact": ArtifactTool(),
+            "dynamic_tool": DynamicToolTool(),
         }
 
     def supports(self, tool_name: str) -> bool:

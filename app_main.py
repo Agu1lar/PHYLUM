@@ -3,7 +3,9 @@ import ctypes
 import importlib.util
 import json
 import logging
+import os
 import platform
+import socket
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional
 
@@ -25,16 +27,56 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
 
-# Allow localhost origins for development (adjust in production)
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _split_csv_env(name: str) -> list[str]:
+    raw = os.getenv(name, "")
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _backend_bind_host() -> str:
+    return os.getenv("AGENTE_RUNTIME_HOST") or os.getenv("AGENTE_BACKEND_HOST") or "127.0.0.1"
+
+
+def _backend_port() -> int:
+    return int(os.getenv("AGENTE_RUNTIME_PORT") or os.getenv("AGENTE_BACKEND_PORT") or "8000")
+
+
+def _lan_origin_regex() -> str:
+    return r"^https?://([a-zA-Z0-9.-]+|\d{1,3}(?:\.\d{1,3}){3})(:\d+)?$"
+
+
+def _private_ipv4_addresses() -> list[str]:
+    values: set[str] = set()
+    try:
+        hostname = socket.gethostname()
+        for entry in socket.getaddrinfo(hostname, None, family=socket.AF_INET):
+            ip = entry[4][0]
+            if ip and not ip.startswith("127."):
+                values.add(ip)
+    except Exception:
+        logger.debug("Unable to inspect local IPv4 addresses", exc_info=True)
+    return sorted(values)
+
+
+LAN_ENABLED = _env_flag("AGENTE_ALLOW_LAN", default=_backend_bind_host() not in {"127.0.0.1", "localhost"})
+PUBLIC_BASE_URL = (os.getenv("AGENTE_PUBLIC_BASE_URL") or "").strip() or None
 allow_origins = [
     "http://127.0.0.1:8000",
     "http://localhost:8000",
     "http://127.0.0.1:5173",
     "http://localhost:5173",
+    *_split_csv_env("AGENTE_CORS_ALLOW_ORIGINS"),
 ]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
+    allow_origin_regex=_lan_origin_regex() if LAN_ENABLED else None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -65,6 +107,7 @@ class RunReplyRequest(BaseModel):
 
 class ApprovalResolutionRequest(BaseModel):
     status: Literal["approved", "rejected", "approve", "reject", "accepted", "denied", "deny"] = "approved"
+    scope: Literal["single", "run_scope"] = "single"
 
 
 # WebSocket broadcaster state
@@ -218,7 +261,7 @@ async def set_approval(approval_id: str, payload: ApprovalResolutionRequest):
     if runtime is None:
         raise HTTPException(status_code=503, detail="runtime not ready")
     try:
-        result = await runtime.resolve_approval(approval_id, status)
+        result = await runtime.resolve_approval(approval_id, status, scope=payload.scope)
     except KeyError:
         raise HTTPException(status_code=404, detail="approval not found")
     return {"ok": True, "approval": result}
@@ -247,6 +290,41 @@ def _is_admin() -> bool:
         return False
 
 
+def _resolved_public_base_url() -> str:
+    if PUBLIC_BASE_URL:
+        return PUBLIC_BASE_URL
+    host = _backend_bind_host()
+    port = _backend_port()
+    if host not in {"0.0.0.0", "::"}:
+        return f"http://{host}:{port}"
+    lan_ips = _private_ipv4_addresses()
+    if lan_ips:
+        return f"http://{lan_ips[0]}:{port}"
+    return f"http://127.0.0.1:{port}"
+
+
+def _network_payload() -> Dict[str, Any]:
+    bind_host = _backend_bind_host()
+    port = _backend_port()
+    lan_ips = _private_ipv4_addresses()
+    suggested_urls = [f"http://127.0.0.1:{port}", f"http://localhost:{port}"]
+    suggested_urls.extend(f"http://{ip}:{port}" for ip in lan_ips)
+    public_base_url = _resolved_public_base_url()
+    return {
+        "bind_host": bind_host,
+        "port": port,
+        "lan_enabled": LAN_ENABLED,
+        "public_base_url": public_base_url,
+        "ws_url": public_base_url.replace("http", "ws", 1) + "/ws",
+        "local_ipv4": lan_ips,
+        "suggested_urls": suggested_urls,
+        "cors": {
+            "allow_origins": allow_origins,
+            "allow_origin_regex": _lan_origin_regex() if LAN_ENABLED else None,
+        },
+    }
+
+
 async def _doctor_payload() -> Dict[str, Any]:
     providers = await credential_store.list_provider_settings()
     installer = _latest_windows_installer_path()
@@ -263,10 +341,14 @@ async def _doctor_payload() -> Dict[str, Any]:
             "win32com": _has_module("win32com"),
             "pypdf": _has_module("pypdf"),
             "extract_msg": _has_module("extract_msg"),
+            "pillow": _has_module("PIL"),
+            "pytesseract": _has_module("pytesseract"),
+            "pymupdf": _has_module("fitz"),
         },
         "runtime": {
             "rehydrated_runs": len(await persistence.list_states()),
             "active_connections": len(getattr(app.state, "connections", [])),
+            "network": _network_payload(),
         },
     }
     warnings = []
@@ -276,6 +358,8 @@ async def _doctor_payload() -> Dict[str, Any]:
         warnings.append("UI Automation nativa ainda nao esta pronta porque pywinauto nao esta instalado.")
     if not capabilities["dependencies"]["win32com"]:
         warnings.append("Office COM nao esta disponivel; automacoes de Word/Excel/Outlook ficarao limitadas.")
+    if not (capabilities["dependencies"]["pillow"] and capabilities["dependencies"]["pytesseract"]):
+        warnings.append("OCR de imagens/PDFs escaneados ficara limitado sem Pillow e pytesseract.")
     return {"ok": len(warnings) == 0, "capabilities": capabilities, "warnings": warnings}
 
 
@@ -310,6 +394,29 @@ async def list_approvals(request_id: Optional[str] = None):
     return {"approvals": await runtime.list_approvals(request_id=request_id)}
 
 
+@app.get('/run/{request_id}/approval-grants')
+async def list_run_approval_grants(request_id: str):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    try:
+        grants = await runtime.list_approval_grants(request_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="run not found")
+    return {"approval_grants": grants}
+
+
+@app.delete('/run/{request_id}/approval-grants/{grant_id}')
+async def revoke_run_approval_grant(request_id: str, grant_id: str):
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="runtime not ready")
+    try:
+        result = await runtime.revoke_approval_grant(request_id, grant_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="approval grant not found")
+    state = await runtime.get_state(request_id)
+    return {"ok": True, "result": result, "state": jsonable_encoder(state)}
+
+
 @app.get('/tools')
 async def list_tools():
     return {"tools": tool_definitions()}
@@ -318,6 +425,11 @@ async def list_tools():
 @app.get('/diagnostics/doctor')
 async def diagnostics_doctor():
     return await _doctor_payload()
+
+
+@app.get('/diagnostics/network')
+async def diagnostics_network():
+    return {"ok": True, "network": _network_payload()}
 
 
 @app.get('/onboarding/capabilities')

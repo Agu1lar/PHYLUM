@@ -1,17 +1,27 @@
-import { useEffect } from 'react'
-import { getWsUrl } from '../lib/runtimeConfig'
+import { useEffect, useState } from 'react'
+import { getWsUrl, subscribeRuntimeConnectionConfig } from '../lib/runtimeConfig'
 import { useStore } from '../state/store'
 
 let sharedSocket: WebSocket | null = null
 let reconnectTimer: number | null = null
 let consumers = 0
 let retries = 0
+let activeWsUrl: string | null = null
 
-function connect() {
-  if (sharedSocket && (sharedSocket.readyState === WebSocket.OPEN || sharedSocket.readyState === WebSocket.CONNECTING)) {
+function connect(wsUrl: string) {
+  if (
+    sharedSocket &&
+    activeWsUrl === wsUrl &&
+    (sharedSocket.readyState === WebSocket.OPEN || sharedSocket.readyState === WebSocket.CONNECTING)
+  ) {
     return sharedSocket
   }
-  const socket = new WebSocket(getWsUrl())
+  if (sharedSocket && activeWsUrl !== wsUrl) {
+    sharedSocket.close()
+    sharedSocket = null
+  }
+  activeWsUrl = wsUrl
+  const socket = new WebSocket(wsUrl)
   sharedSocket = socket
   socket.onopen = () => {
     retries = 0
@@ -61,7 +71,7 @@ function connect() {
       const delay = Math.min(10000, 1000 * 2 ** retries)
       retries += 1
       reconnectTimer = window.setTimeout(() => {
-        connect()
+        connect(activeWsUrl || getWsUrl())
       }, delay)
     }
   }
@@ -72,9 +82,17 @@ function connect() {
 }
 
 export default function useSocket() {
+  const [wsUrl, setWsUrl] = useState(() => getWsUrl())
+
+  useEffect(() => {
+    return subscribeRuntimeConnectionConfig(() => {
+      setWsUrl(getWsUrl())
+    })
+  }, [])
+
   useEffect(() => {
     consumers += 1
-    connect()
+    connect(wsUrl)
     return () => {
       consumers -= 1
       if (consumers <= 0) {
@@ -84,9 +102,10 @@ export default function useSocket() {
         }
         sharedSocket?.close()
         sharedSocket = null
+        activeWsUrl = null
       }
     }
-  }, [])
+  }, [wsUrl])
 
   return {
     connected: useStore(state => state.connected),

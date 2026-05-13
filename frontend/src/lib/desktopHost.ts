@@ -1,4 +1,4 @@
-import { getApiBase, getWsUrl, isDesktopApp } from './runtimeConfig'
+import { getApiBase, getDesktopConnectionMode, getWsUrl, isDesktopApp } from './runtimeConfig'
 
 declare global {
   interface Window {
@@ -23,10 +23,45 @@ async function waitForBackend(maxAttempts = 40, delayMs = 250) {
   throw new Error('desktop backend did not become ready in time')
 }
 
+function resolveSidecarLaunch() {
+  const apiBase = getApiBase()
+  const url = new URL(apiBase)
+  const port = Number(url.port || (url.protocol === 'https:' ? '443' : '80'))
+  const host = url.hostname
+  const bindHost = host === 'localhost' || host === '127.0.0.1' ? host : '0.0.0.0'
+  const allowLan = bindHost === '0.0.0.0'
+  return {
+    apiBase,
+    wsUrl: getWsUrl(),
+    port,
+    bindHost,
+    allowLan,
+  }
+}
+
 export async function ensureDesktopBackend() {
   if (!isDesktopApp()) {
     return
   }
+
+  const mode = getDesktopConnectionMode()
+  if (mode === 'remote-backend') {
+    if (window.__AGENTE_BACKEND_CHILD__?.kill) {
+      try {
+        await window.__AGENTE_BACKEND_CHILD__.kill()
+      } catch (error) {
+        console.error('failed to stop local backend child', error)
+      }
+      window.__AGENTE_BACKEND_CHILD__ = null
+      window.__AGENTE_BACKEND_BOOT__ = undefined
+    }
+    window.__AGENTE_API_BASE__ = getApiBase()
+    window.__AGENTE_WS_URL__ = getWsUrl()
+    await waitForBackend(20, 250)
+    return
+  }
+
+  const launch = resolveSidecarLaunch()
 
   try {
     await waitForBackend(2, 50)
@@ -39,12 +74,16 @@ export async function ensureDesktopBackend() {
     return window.__AGENTE_BACKEND_BOOT__
   }
 
-  window.__AGENTE_API_BASE__ = getApiBase()
-  window.__AGENTE_WS_URL__ = getWsUrl()
+  window.__AGENTE_API_BASE__ = launch.apiBase
+  window.__AGENTE_WS_URL__ = launch.wsUrl
 
   window.__AGENTE_BACKEND_BOOT__ = (async () => {
     const { Command } = await import('@tauri-apps/plugin-shell')
-    const command = Command.sidecar('agente-backend', ['--host', '127.0.0.1', '--port', '8000'])
+    const args = ['--host', launch.bindHost, '--port', String(launch.port)]
+    if (launch.allowLan) {
+      args.push('--allow-lan', '--public-base-url', launch.apiBase)
+    }
+    const command = Command.sidecar('agente-backend', args)
     command.on('close', event => {
       console.info('desktop backend sidecar closed', event)
       window.__AGENTE_BACKEND_CHILD__ = null
