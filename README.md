@@ -1,16 +1,31 @@
-# Agente Desktop
+<!-- Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by the Free Software Foundation,
+either version 3 of the License, or any later version. -->
 
-Runtime local para automacao operacional no Windows orientada por linguagem natural.
+# PHYLUM
 
-Backend **FastAPI** + frontend **React/Vite** com **WebSocket** em tempo real + runtime agentico com planejamento, execucao, recuperacao e aprendizado contínuo.
+**Local-first, open-source agentic runtime for Windows.**
+**Your hardware, your AI, your control.**
 
-Foco: **Windows local-first**, priorizando APIs nativas e automacao sem pixel automation.
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
+PHYLUM e um runtime agentico que roda inteiramente na sua maquina. Nenhum dado sai do seu ambiente. Voce escolhe o provider LLM, voce controla as credenciais, voce decide o que o agente pode fazer. Codigo aberto sob GPLv3 — livre para usar, modificar e distribuir.
+
+---
+
+## Por que PHYLUM?
+
+- **Local-first**: tudo roda no seu hardware. Seus dados nunca saem da sua maquina.
+- **Open-source (GPLv3)**: codigo aberto, auditavel, sem vendor lock-in.
+- **Voce escolhe o LLM**: Anthropic, OpenAI, Gemini, OpenRouter ou qualquer provider compativel. Traga sua propria API key.
+- **Zero telemetria**: nenhum tracking, nenhum analytics, nenhum phone-home.
+- **Autonomia real**: o agente planeja, executa, reflete, se recupera de falhas e aprende — sem depender de servicos cloud proprietarios.
 
 ---
 
 ## Visao geral
 
-O Agente Desktop e um sistema de automacao que recebe instrucoes em linguagem natural e as executa no ambiente Windows do usuario. Ele nao e um simples "tool runner" — e um runtime agentico completo que planeja, executa, reflete, se recupera de falhas e aprende com experiencias anteriores.
+PHYLUM recebe instrucoes em linguagem natural e as executa no ambiente Windows do usuario. Nao e um simples "tool runner" — e um runtime agentico completo que planeja, executa, reflete, se recupera de falhas e aprende com experiencias anteriores.
 
 O agente opera com um ciclo cognitivo:
 
@@ -109,7 +124,7 @@ Tres topologias de grafo compiladas: **agentic** (LLM-driven), **local_heuristic
 - **Explorer profundo**: drives mapeados, pastas, contexto de janelas abertas
 - **UI Automation nativa** via pywinauto: inspecionar, clicar, preencher, selecionar, scroll, hotkeys, esperar elementos
 - **Selector healing automatico**: quando um seletor UI falha, o agente busca candidatos similares no World Model, testa na UI ao vivo e atualiza com confianca renovada
-- **Office COM adapters**: Word (abrir, buscar texto, exportar PDF, save-as), Excel (ler ranges, listar planilhas), Outlook (buscar mensagens, criar rascunho)
+- **Office COM adapters headless**: Word (abrir, buscar texto, exportar PDF, save-as, criar documentos), Excel (ler ranges, listar planilhas), Outlook (ler emails recentes, buscar mensagens, criar rascunho) — tudo rodando em background sem exigir que o usuario abra nenhum aplicativo
 - **Discovery operacional**: aplicativos instalados, servicos, shares SMB, clipboard, notificacoes
 
 ### 2. Processamento de documentos e artefatos
@@ -123,6 +138,8 @@ Tres topologias de grafo compiladas: **agentic** (LLM-driven), **local_heuristic
 ### 3. Execucao dinamica de codigo
 
 - **Sandbox isolado** para Python e PowerShell com timeout, cancelamento e coleta de artefatos
+- **Auto-inject de COM init**: scripts sandbox que usam win32com recebem automaticamente `pythoncom.CoInitialize()` e `try/except` wrapper
+- **Fallback sync**: quando `asyncio.create_subprocess_exec` falha com `NotImplementedError` (certas configs Windows), o sandbox cai para `subprocess.run` via thread
 - **Scripts gerados em tempo real** para resolver problemas nao previstos
 - **Orquestracao multi-fonte**: um unico script pode ler emails (Outlook COM), cruzar com planilha (openpyxl), e gerar relatorio
 - **Auto-criacao de micro-tools**: ferramentas persistidas em disco e reutilizaveis entre runs
@@ -195,7 +212,7 @@ O catalogo canonico compartilhado por planner, runtime, API e UI:
 | `windows_ui` | Inspecao, clique, preenchimento, scroll, hotkeys, espera |
 | `share_discovery` | Shares SMB e contexto do Explorer |
 | `document_intelligence` | Inspecao, extracao, busca documental |
-| `office` | Word, Excel, Outlook via COM |
+| `office` | Word (abrir, buscar, criar, exportar PDF), Excel (ler ranges, listar planilhas), Outlook (ler emails recentes, buscar, rascunho) — tudo headless |
 | `sandbox` | Execucao de Python/PowerShell em sandbox |
 | `artifact` | Processamento interno de arquivos |
 | `dynamic_tool` | Criacao e execucao de micro-tools |
@@ -213,6 +230,7 @@ O que o sistema consegue fazer hoje:
 - "Instale a impressora de rede HP do escritorio"
 - "Configure o caminho do aplicativo X no sistema"
 - "Me de um resumo dos ultimos 10 emails do Outlook sobre o projeto Y"
+- "Retorne meus 3 ultimos emails do Outlook em um documento Word" (sem abrir nenhum app)
 - "Crie um script que organize os arquivos da pasta Downloads por tipo e data"
 - "Investigue por que a impressora nao esta funcionando" (com pause para pedir contexto)
 - "Processe este CSV de 50mil linhas e me de as top 10 categorias por receita"
@@ -254,7 +272,17 @@ O `ExecutionStrategy` analisa cada task e decide transparentemente:
 - **script**: melhor resolvido com um script sob medida
 - **native**: deve usar a tool nativa diretamente
 
-Office COM reads (excel_read_range, outlook_search_messages) sao redirecionados para sandbox/artifact quando o objetivo e leitura, nao interacao visual.
+Office COM e tratado como **headless** (background): `office.outlook_read_latest`, `office.outlook_search_messages`, `office.word_create_document` executam via COM sem exigir que o usuario abra Outlook/Word. O agente nunca pede para o usuario abrir nenhum aplicativo.
+
+### Sandbox robusto para COM
+
+Scripts no sandbox que usam `win32com` ou `Dispatch` recebem automaticamente:
+- `pythoncom.CoInitialize()` / `CoUninitialize()` para inicializacao correta do COM apartment
+- `try/except` wrapper com `traceback.print_exc()` para nunca falhar silenciosamente
+- `sys.exit(1)` em caso de excecao para garantir returncode != 0
+- `CREATE_NO_WINDOW` flag no Windows para evitar popups COM bloqueantes
+- Fallback para `subprocess.run` via thread quando `asyncio.create_subprocess_exec` lanca `NotImplementedError`
+- `sys.executable` em vez de `"python"` para garantir o mesmo interpretador
 
 ### Persistencia e durabilidade
 
@@ -420,6 +448,111 @@ O semantic index usa feature hashing local (rapido, offline, deterministico). Pa
 - [ ] Re-ranking hibrido (BM25 + vetorial)
 - [ ] Indexacao incremental com batch updates
 
+### Capacidades avancadas (proximo nivel)
+
+#### Parallel tool calls (batch execution) ✅ Concluido
+
+O agentic loop agora executa multiplas tool calls em paralelo quando sao independentes.
+Quando o LLM emite N tool calls em um unico turn, o runtime classifica cada uma como
+independente (read/inspection) ou dependente (mutation/data-flow) e executa as independentes
+via `asyncio.gather`. Resultados sao reordenados na sequencia original para o message history.
+
+- [x] Suporte a multiplas tool calls por turn do LLM (batch de NormalizedToolCall)
+- [x] Execucao concorrente via asyncio.gather para tools independentes
+- [x] Deteccao de dependencias entre tool calls para ordenar quando necessario
+- [x] Reducao de custo: N tools independentes gastam 1 step em vez de N
+
+#### Extended thinking (chain-of-thought estruturado)
+
+O LLM responde direto com uma tool call sem raciocinio intermediario visivel.
+Habilitar extended thinking (Anthropic) ou chain-of-thought permite ao modelo avaliar opcoes, descartar hipoteses e planejar multi-step antes de agir:
+
+- [x] Ativar `adaptive thinking` na API Anthropic (Sonnet 4.6, Opus 4.6/4.7)
+- [x] Capturar e persistir o reasoning chain para observabilidade (evento `agent_thinking`, checkpoint)
+- [x] Usar o thinking como input para o ReflectionNode (o modelo ja pensou — nao precisa re-avaliar)
+- [x] Preservar thinking blocks em multi-turn para continuidade de raciocinio
+- [x] Timeout adaptativo (120s) para chamadas com thinking ativo
+- [x] Remocao de fallback morto (`SCRIPT_TEMPLATES["read_email_outlook"]`)
+
+#### Context window management (sumarizacao de resultados)
+
+Quando uma tool retorna dados grandes (ex: 3 emails com 3000 chars cada), tudo vai cru no proximo step como contexto.
+Isso despertica tokens e contribui para truncamento de respostas. A evolucao e comprimir resultados antigos:
+
+- [ ] Sumarizar tool results apos consumo (manter resumo, descartar detalhes)
+- [ ] Sliding window com prioridade recency (resultados recentes inteiros, antigos resumidos)
+- [ ] Token budgeting por step (garantir espaco para o LLM responder)
+- [ ] Compressao seletiva: manter dados numericos/paths inteiros, comprimir texto narrativo
+
+#### Web research como parte da discovery autonoma
+
+Quando o agente nao sabe como resolver um problema (ex: "como descobrir impressoras na rede local via PowerShell"),
+ele deveria pesquisar na web e aplicar o resultado. Hoje o tool `web.search` existe mas o LLM nao o usa proativamente para aprender:
+
+- [ ] Instrucao explicita no system prompt para usar web.search como ferramenta de aprendizado
+- [ ] Integrar resultados de web search no raciocinio do agente (nao so retornar ao usuario)
+- [ ] Cache de respostas web no World Model (evitar re-pesquisar o mesmo problema)
+- [ ] Filtro de qualidade: preferir docs oficiais, StackOverflow, Microsoft Learn
+
+#### Sub-agentes e execucao paralela de branches
+
+Hoje o planner decompoe em fases sequenciais. Para tasks complexas, branches paralelos seriam mais eficientes
+(ex: enquanto um agente investiga a rede, outro checa drivers instalados, outro busca na web):
+
+- [ ] Spawn de sub-agentes com contexto isolado e objetivo especifico
+- [ ] Merge de resultados quando todos os sub-agentes completam
+- [ ] Budget individual por sub-agente (tokens, timeout, custo)
+- [ ] Cancelamento em cascata (se o objetivo geral e atingido, cancelar branches restantes)
+
+#### Retry inteligente com re-inject de erros de validacao
+
+Quando uma tool call falha por validacao (ex: campo `content` faltando), o sistema gasta um step inteiro
+para o LLM ver o erro e tentar de novo. Um middleware que intercepta e re-injeta automaticamente seria mais eficiente:
+
+- [ ] Middleware pre-execution que valida argumentos antes de gastar o step
+- [ ] Re-inject automatico do erro com contexto ("campo content e obrigatorio, re-gere incluindo o conteudo")
+- [ ] Limite de re-injects por step (evitar loop infinito)
+- [ ] Metricas de taxa de re-inject por tool (identificar tools com schema confuso para o LLM)
+
+#### Model routing por complexidade
+
+O mesmo modelo (claude-sonnet-4-6) e usado para "ola" e para "instale drivers da rede".
+Um router inteligente economizaria custo e latencia direcionando tasks simples para modelos rapidos:
+
+- [ ] Classificador de complexidade (trivial, simples, complexo, multi-step)
+- [ ] Pool de modelos: rapido/barato (haiku/gpt-4o-mini) para trivial, completo para complexo
+- [ ] Fallback automatico: se modelo rapido falha, escalar para modelo completo
+- [ ] Metricas de custo por run com breakdown por modelo usado
+
+#### Streaming e feedback em tempo real
+
+O usuario nao ve nada ate a run inteira acabar ou falhar. Streaming de progresso daria mais confianca:
+
+- [ ] SSE/WebSocket com streaming de events (task_planned, task_started, thinking)
+- [ ] Streaming de texto parcial do LLM (mostrar o que o agente esta pensando)
+- [ ] Progress bar por fase do grafo (planner -> executor -> reflection)
+- [ ] Notificacoes de recovery ("tool falhou, tentando alternativa...")
+
+#### Memoria conversacional cross-run
+
+Cada run e independente — se o usuario diz "faz de novo mas com 5 emails", o agente nao sabe o que "de novo" significa.
+Um conversation buffer persistido entre runs permitiria continuidade:
+
+- [ ] Conversation buffer em SQLite (ultimas N mensagens por sessao)
+- [ ] Resolucao de referencias ("de novo" = ultima task, "aquele arquivo" = ultimo path usado)
+- [ ] Contexto de sessao injetado no system prompt (resumo das ultimas interacoes)
+- [ ] TTL por sessao (limpar contexto apos inatividade)
+
+#### Constrained decoding e schema enforcement
+
+Garantir que o LLM sempre gere tool calls com todos os campos obrigatorios,
+em vez de validar depois e desperdicar steps:
+
+- [ ] JSON schema enforcement na geracao (guided decoding onde o provider suportar)
+- [ ] Pre-validacao client-side dos argumentos antes de aceitar o tool call
+- [ ] Template de argumentos obrigatorios injetado no prompt por tool
+- [ ] Metricas de compliance por tool (quais tools o LLM mais erra)
+
 ---
 
 ## Documentacao complementar
@@ -429,12 +562,23 @@ O semantic index usa feature hashing local (rapido, offline, deterministico). Pa
 
 ---
 
+## Licenca
+
+PHYLUM e software livre distribuido sob a **GNU General Public License v3.0** (GPLv3).
+Veja o arquivo [LICENSE](LICENSE) para o texto completo.
+
+Copyright (C) 2026 Aguilar.
+
+---
+
 ## Direcao do projeto
 
-Construir um agente desktop local que opere no Windows como um operador humano experiente: usando APIs nativas, tools tipadas, approvals claros, runtime duravel e aprendizado continuo.
+Construir um runtime agentico local-first que opere no Windows como um operador humano experiente: usando APIs nativas, tools tipadas, approvals claros, runtime duravel e aprendizado continuo. Codigo aberto, sem dependencia de cloud proprietario, sem telemetria.
 
 Principios:
 
+- **Local-first**: seus dados ficam na sua maquina, sempre
+- **Open-source**: codigo auditavel, contribuicoes bem-vindas
 - **Autonomia crescente**: menos fallback precoce, mais resolucao proativa
 - **Zero pixel automation**: APIs nativas como espinha dorsal
 - **Aprendizado real**: cada run melhora o world model e strategy memory

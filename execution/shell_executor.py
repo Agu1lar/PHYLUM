@@ -1,7 +1,11 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
 import asyncio
 import logging
 import subprocess
 import shlex
+import sys
 import time
 import traceback
 from typing import Optional, Dict, Any, List
@@ -37,7 +41,15 @@ class ShellExecutor:
     async def _spawn(self, cmd_list: List[str], timeout: int, cancel_event: Optional[asyncio.Event] = None) -> Dict[str, Any]:
         logger.debug("Spawning process: %s", cmd_list)
         start = time.time()
-        proc = await asyncio.create_subprocess_exec(*cmd_list, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        kwargs: Dict[str, Any] = {"stdout": asyncio.subprocess.PIPE, "stderr": asyncio.subprocess.PIPE}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+        try:
+            proc = await asyncio.create_subprocess_exec(*cmd_list, **kwargs)
+        except NotImplementedError:
+            return await self._spawn_sync_fallback(cmd_list, timeout=timeout)
+        except Exception as exc:
+            raise exc
         pid = proc.pid
         cancellation_requested = False
 
@@ -98,6 +110,45 @@ class ShellExecutor:
         finally:
             if cancel_task is not None:
                 cancel_task.cancel()
+
+    async def _spawn_sync_fallback(self, cmd_list: List[str], *, timeout: int) -> Dict[str, Any]:
+        """Fallback when asyncio subprocess is not available (some Windows event loop configs)."""
+        start = time.time()
+
+        def _run():
+            kwargs: Dict[str, Any] = {
+                "capture_output": True,
+                "timeout": timeout,
+            }
+            if sys.platform == "win32":
+                kwargs["creationflags"] = 0x08000000
+            return subprocess.run(cmd_list, **kwargs)
+
+        try:
+            result = await asyncio.to_thread(_run)
+            duration = time.time() - start
+            stdout = result.stdout.decode(errors="ignore") if result.stdout else ""
+            stderr = result.stderr.decode(errors="ignore") if result.stderr else ""
+            return {
+                "stdout": stdout,
+                "stderr": stderr,
+                "returncode": result.returncode,
+                "pid": None,
+                "duration": duration,
+                "cancelled": False,
+                "timed_out": False,
+            }
+        except subprocess.TimeoutExpired:
+            duration = time.time() - start
+            return {
+                "stdout": "",
+                "stderr": "timeout",
+                "returncode": -1,
+                "pid": None,
+                "duration": duration,
+                "cancelled": False,
+                "timed_out": True,
+            }
 
     async def execute(self, command: str, *, shell: str = 'powershell', timeout: int = 30, retries: Optional[int] = None, require_admin: bool = False, cancel_event: Optional[asyncio.Event] = None, allow_protected_paths: bool = False) -> StructuredResponse:
         """Execute a command safely on Windows. command is a string.

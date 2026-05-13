@@ -1,4 +1,17 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
 from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+_root = Path(__file__).resolve().parent
+for _sub in ("core", "tools", "agents", "nodes", "models", "providers",
+             "safety", "memory", "execution", "persistence"):
+    _p = str(_root / _sub)
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import argparse
 import os
@@ -7,7 +20,7 @@ import uvicorn
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the packaged Agente Desktop backend.")
+    parser = argparse.ArgumentParser(description="Run the packaged PHYLUM backend.")
     parser.add_argument("--host", default=os.getenv("AGENTE_BACKEND_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("AGENTE_BACKEND_PORT", "8000")))
     parser.add_argument("--log-level", default=os.getenv("AGENTE_BACKEND_LOG_LEVEL", "info"))

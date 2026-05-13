@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
 import logging
 from typing import Optional
 
@@ -142,7 +145,7 @@ class DesktopTool(BaseTool):
                 details = await self.agent.clipboard_set(payload.text or "")
                 summary = "Atualizei a area de transferencia."
             elif payload.action == "notify":
-                details = await self.agent.notify(payload.message or "", title=payload.title or "Agente Desktop")
+                details = await self.agent.notify(payload.message or "", title=payload.title or "PHYLUM")
                 summary = "Enviei a notificacao."
             elif payload.action == "list_services":
                 details = await self.agent.list_services()

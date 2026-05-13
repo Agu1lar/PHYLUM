@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
 from nodes_base import BaseNode
 from typing import Dict, Any
 import logging
@@ -22,6 +25,10 @@ class ReflectionNode(BaseNode):
         return True
 
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        thinking = state.get("_last_thinking")
+        if thinking:
+            return self._reflection_from_thinking(state, thinking)
+
         task = state.get("current_task")
         task_result = state.get("current_task_result")
         task_error = state.get("current_task_error")
@@ -95,6 +102,27 @@ class ReflectionNode(BaseNode):
             "recommended_action": None if verdict == "success" else ((task or {}).get("recovery") or {"action": "stop"}),
         }
         return {"reflection": summary}
+
+    def _reflection_from_thinking(self, state: Dict[str, Any], thinking: str) -> Dict[str, Any]:
+        """When extended thinking is available, derive the reflection from the
+        model's own reasoning instead of re-evaluating the task result."""
+        task = state.get("current_task")
+        task_error = state.get("current_task_error")
+        failed_keywords = ("failed", "error", "cannot", "unable", "not found", "denied")
+        thinking_lower = thinking[:2000].lower()
+        looks_failed = task_error or any(kw in thinking_lower for kw in failed_keywords)
+
+        verdict = "failed" if looks_failed else "success"
+        recovery = (task or {}).get("recovery") if task else None
+
+        return {
+            "reflection": {
+                "verdict": verdict,
+                "summary": thinking[:300],
+                "details": {"source": "extended_thinking", "thinking_length": len(thinking)},
+                "recommended_action": (recovery or {"action": "stop"}) if verdict != "success" else None,
+            }
+        }
 
     async def verify(self, state: Dict[str, Any], result: Dict[str, Any]) -> bool:
         return result.get("reflection", {}).get("verdict") == "success"

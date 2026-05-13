@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
 from __future__ import annotations
 
 import asyncio
@@ -83,6 +86,19 @@ class AgenticLoop:
                 base_url=provider_config.get("base_url"),
             )
 
+            if turn.thinking:
+                await emit(
+                    "agent_thinking",
+                    {
+                        "request_id": state["request_id"],
+                        "step": step,
+                        "thinking": self._truncate(turn.thinking, limit=500),
+                    },
+                )
+                state["_last_thinking"] = turn.thinking
+                if checkpoint is not None:
+                    await checkpoint({"step": step, "thinking": self._truncate(turn.thinking, limit=500)})
+
             if turn.content:
                 await emit(
                     "agent_step",
@@ -102,39 +118,48 @@ class AgenticLoop:
                     )
 
             if turn.tool_calls:
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": turn.content or None,
-                        "tool_calls": [to_openai_tool_call(tool_call.id, tool_call.name, tool_call.arguments) for tool_call in turn.tool_calls],
-                    }
-                )
+                assistant_msg: Dict[str, Any] = {
+                    "role": "assistant",
+                    "content": turn.content or None,
+                    "tool_calls": [to_openai_tool_call(tool_call.id, tool_call.name, tool_call.arguments) for tool_call in turn.tool_calls],
+                }
+                if turn.thinking_blocks:
+                    assistant_msg["_thinking_blocks"] = turn.thinking_blocks
+                messages.append(assistant_msg)
                 if checkpoint is not None:
                     await checkpoint({"messages": messages, "step": step})
-                for tool_call in turn.tool_calls:
-                    if cancel_event.is_set():
-                        raise asyncio.CancelledError()
-                    if tool_call.name == "request_user_input":
-                        handoff = self._handoff_from_tool_call(state, tool_call)
-                        if checkpoint is not None:
-                            await checkpoint(
-                                {
-                                    "messages": messages,
-                                    "step": step,
-                                    "paused_reason": "awaiting_input",
-                                    "pending_subgoal": handoff.get("prompt"),
-                                    "observation": {
-                                        "kind": "handoff_requested",
-                                        "prompt": handoff.get("prompt"),
-                                        "reason": handoff.get("reason"),
-                                    },
-                                }
-                            )
-                        return {
-                            "status": "awaiting_input",
-                            "handoff": handoff,
-                            "session": {"messages": messages, "step": step, "paused_reason": "awaiting_input"},
-                        }
+
+                handoff_call = next(
+                    (tc for tc in turn.tool_calls if tc.name == "request_user_input"), None
+                )
+                if handoff_call is not None:
+                    handoff = self._handoff_from_tool_call(state, handoff_call)
+                    if checkpoint is not None:
+                        await checkpoint(
+                            {
+                                "messages": messages,
+                                "step": step,
+                                "paused_reason": "awaiting_input",
+                                "pending_subgoal": handoff.get("prompt"),
+                                "observation": {
+                                    "kind": "handoff_requested",
+                                    "prompt": handoff.get("prompt"),
+                                    "reason": handoff.get("reason"),
+                                },
+                            }
+                        )
+                    return {
+                        "status": "awaiting_input",
+                        "handoff": handoff,
+                        "session": {"messages": messages, "step": step, "paused_reason": "awaiting_input"},
+                    }
+
+                executable_calls = [
+                    tc for tc in turn.tool_calls if tc.name != "request_user_input"
+                ]
+
+                planned: List[tuple] = []
+                for tool_call in executable_calls:
                     task = task_factory(tool_call.name, tool_call.arguments, step)
                     state["tasks"].append(task)
                     await emit("task_planned", {"request_id": state["request_id"], "task": task})
@@ -158,13 +183,59 @@ class AgenticLoop:
                                 "strategy": {"step": step, "tool_call": tool_call.name, "task_id": task["id"], "title": task["title"]},
                             }
                         )
-                    task_result = await self._execute_task(
-                        state=state,
-                        task=task,
-                        emit=emit,
-                        cancel_event=cancel_event,
-                        execute_task=execute_task,
+                    planned.append((tool_call, task))
+
+                independent, dependent = self._partition_by_dependency(planned)
+
+                if len(independent) > 1:
+                    await emit(
+                        "agent_step",
+                        {
+                            "request_id": state["request_id"],
+                            "step": step,
+                            "summary": f"Executing {len(independent)} tool calls in parallel",
+                        },
                     )
+
+                results_map: Dict[str, Dict[str, Any]] = {}
+
+                if independent:
+                    async def _exec_one(tc, tsk):
+                        return tc, tsk, await self._execute_task(
+                            state=state, task=tsk, emit=emit,
+                            cancel_event=cancel_event, execute_task=execute_task,
+                        )
+
+                    if cancel_event.is_set():
+                        raise asyncio.CancelledError()
+
+                    gathered = await asyncio.gather(
+                        *[_exec_one(tc, tsk) for tc, tsk in independent],
+                        return_exceptions=True,
+                    )
+                    for item in gathered:
+                        if isinstance(item, BaseException):
+                            if isinstance(item, asyncio.CancelledError):
+                                raise item
+                            results_map["__error__"] = {
+                                "status": "failed",
+                                "error": f"{item.__class__.__name__}: {item}",
+                            }
+                            continue
+                        tc, tsk, result = item
+                        results_map[tc.id] = result
+
+                for tool_call, task in dependent:
+                    if cancel_event.is_set():
+                        raise asyncio.CancelledError()
+                    task_result = await self._execute_task(
+                        state=state, task=task, emit=emit,
+                        cancel_event=cancel_event, execute_task=execute_task,
+                    )
+                    results_map[tool_call.id] = task_result
+
+                for tool_call, task in planned:
+                    task_result = results_map.get(tool_call.id, {"status": "failed", "error": "execution skipped"})
                     messages.append(
                         {
                             "role": "tool",
@@ -188,15 +259,21 @@ class AgenticLoop:
                 continue
 
             if turn.content:
-                messages.append({"role": "assistant", "content": turn.content})
+                final_msg: Dict[str, Any] = {"role": "assistant", "content": turn.content}
+                if turn.thinking_blocks:
+                    final_msg["_thinking_blocks"] = turn.thinking_blocks
+                messages.append(final_msg)
                 if checkpoint is not None:
                     await checkpoint({"messages": messages, "step": step, "paused_reason": None})
-                return {
+                result: Dict[str, Any] = {
                     "status": "completed",
                     "final_text": turn.content,
                     "steps": step,
                     "session": {"messages": messages, "step": step},
                 }
+                if turn.thinking:
+                    result["thinking"] = turn.thinking
+                return result
             raise RuntimeError("Agent returned neither text nor tool call")
 
         raise RuntimeError(f"Agentic loop reached max_steps={self.max_steps}")
@@ -216,117 +293,142 @@ class AgenticLoop:
 
     def _system_prompt(self) -> str:
         return (
-            "You are the agentic runtime for a desktop automation assistant. "
-            "Use the available tools to complete the user's request. "
-            "The shell tool is available in this environment and can run Windows PowerShell or cmd commands; do not assume shell is unavailable unless a shell command actually failed. "
-            "The desktop tool can list Explorer windows, list mapped drives, inspect Explorer selection, open apps, open files and folders, wait for windows, focus windows, close windows, and kill processes. "
-            "The windows_ui tool can inspect native windows, list or find controls, wait for elements, invoke controls, type text, select items, send hotkeys and read focused UI state without pixel automation. "
-            "The share_discovery tool can enumerate mapped drives, inspect share roots and capture Explorer network context. "
-            "The document_intelligence tool can inspect documents, extract text, search content and list recent documents. "
-            "The office tool can use Office COM to open documents, export PDFs, inspect workbooks, reveal active document paths and draft Outlook emails. "
-            "The sandbox tool can execute dynamic Python or PowerShell scripts in a controlled sandbox for on-demand problem solving. "
-            "Use sandbox.execute_python or sandbox.execute_powershell when no existing tool covers the task, or when you need custom data analysis, complex transformations, ad-hoc automation, or to write scripts that solve a specific problem the user described. "
-            "You can pass input_files to the sandbox to provide data for the script to work with. "
-            "The artifact tool can load, read, transform and analyze files internally (text, CSV, JSON, PDF, DOCX, XLSX, MSG) without opening them on the user's desktop. "
-            "Use artifact.load to read a file into memory, artifact.transform to summarize/filter/extract data, and artifact.write_result to save processed output. "
-            "If the user asks to read, analyze or transform a file, prefer using the artifact tool to process it internally and return the result directly. "
-            "The dynamic_tool tool can create, persist, and execute reusable micro-tools during a run. "
-            "Use dynamic_tool.create when you encounter a recurring need that no native tool covers, writing a small Python function with a run(params) entry point. "
-            "Use dynamic_tool.execute to invoke a previously created tool, and dynamic_tool.list to discover existing ones. "
+            "You are the agentic runtime for a desktop automation assistant on Windows. "
+            "You are a fully autonomous agent that ACTS first and reports results after. "
             "\n\n"
-            "WORLD MODEL: The memory tool now has a typed world model with confidence-scored entities and TTL expiration. "
+            "== RESPONSE FORMAT ==\n"
+            "Write responses as a competent colleague would speak — clean, natural, direct. "
+            "NEVER use excessive emojis. NEVER use markdown tables for simple lists. NEVER use headers (##) excessively. "
+            "Use plain text with occasional bold for emphasis. Keep responses concise and action-oriented. "
+            "Bad example: '## 🔍 Diagnóstico\\n| # | Nome | Driver |\\n|---|------|--------|' "
+            "Good example: 'Encontrei 3 impressoras instaladas: Microsoft Print to PDF, OneNote Desktop e RustDesk Printer. Todas são virtuais.' "
+            "When presenting results, summarize the key findings in 2-3 sentences. Add details only if the user asks. "
+            "\n\n"
+            "== PROACTIVE AUTONOMY ==\n"
+            "You MUST think associatively like a human assistant. When you complete a step, ask yourself: "
+            "'What would the user logically want me to do NEXT based on what I just found?' "
+            "Then DO IT — do not stop to ask permission for the obvious next step. "
+            "\n"
+            "Examples of associative thinking:\n"
+            "- User asks 'install drivers from the network' -> you discover only virtual printers exist -> "
+            "  NEXT: scan the network for physical printers/devices, check for shared printers, try to discover and configure them. "
+            "  Do NOT stop to list virtual printers and ask 'which printer do you want?'. "
+            "- User asks 'get my last 3 emails in a Word doc' -> you read the emails -> "
+            "  NEXT: immediately create the Word document with the content. Do not ask where to save it, just pick a sensible default. "
+            "- User asks 'organize my Downloads folder' -> you list the files -> "
+            "  NEXT: immediately create folders by type and move files. Do not ask 'how should I organize?'. "
+            "- User asks 'check if the VPN is working' -> you find it's disconnected -> "
+            "  NEXT: try to reconnect it. Do not just report 'VPN is disconnected'. "
+            "\n"
+            "The rule: if the next step is OBVIOUS from context, DO IT. Only use request_user_input when: "
+            "(1) there are multiple equally valid choices that depend on user preference, OR "
+            "(2) you need information that cannot be discovered with the available tools (like a password or specific model name that doesn't appear anywhere in the system). "
+            "Exhaust ALL discovery options before asking the user anything. "
+            "\n\n"
+            "== AVAILABLE TOOLS ==\n"
+            "shell: Windows PowerShell and cmd commands. Do not assume shell is unavailable unless a command actually failed.\n"
+            "desktop: list Explorer windows, mapped drives, open apps/files/folders, focus/close/kill windows and processes.\n"
+            "windows_ui: inspect windows, find/list controls, invoke controls, type text, select items, send hotkeys, read UI state (via pywinauto, no pixel automation).\n"
+            "share_discovery: enumerate mapped drives, inspect share roots, capture Explorer network context.\n"
+            "document_intelligence: inspect documents, extract text, search content, list recent documents.\n"
+            "office: Word, Excel, Outlook via COM — ALL headlessly in background. "
+            "Actions: open_document, export_pdf, save_as_document, list_workbook_sheets, word_find_text, word_create_document, "
+            "excel_read_range, outlook_read_latest, outlook_search_messages, draft_email_with_attachment, reveal_active_document_path.\n"
+            "sandbox: execute dynamic Python or PowerShell scripts in a controlled sandbox. Use for custom data analysis, ad-hoc automation, or when no existing tool covers the task. "
+            "Pass input_files to provide data.\n"
+            "artifact: load, read, transform and analyze files internally (TXT, CSV, JSON, PDF, DOCX, XLSX, MSG) without opening desktop apps.\n"
+            "dynamic_tool: create, persist, and execute reusable micro-tools (Python functions with a run(params) entry point).\n"
+            "\n\n"
+            "== WORLD MODEL & STRATEGY MEMORY ==\n"
             "Entity types: share, app_path, document_alias, selector, path_candidate, device, web_resource, user_preference, environment. "
-            "Before discovering something from scratch, first check if it is already known: "
-            "use memory.world_find_share, memory.world_find_app, memory.world_find_alias, memory.world_find_selector, or memory.world_find_path to look up cached knowledge. "
-            "After successfully discovering a share, app path, document alias, UI selector, or file path, persist it: "
-            "use memory.world_remember_share, memory.world_remember_app, memory.world_remember_alias, memory.world_remember_selector, or memory.world_remember_path. "
-            "When a known entity is reused successfully, call memory.world_touch with boost_confidence to reinforce it. "
-            "For general typed entities, use memory.world_upsert/world_get/world_query with entity_type, confidence, source, tags, and optional ttl_seconds. "
-            "Entities automatically expire based on their TTL; use memory.world_prune to clean up stale entries. "
-            "Confidence decays over time (0.05/day) so stale knowledge is naturally deprioritized. "
+            "Before discovering from scratch, check if known: memory.world_find_share/app/alias/selector/path. "
+            "After discovering, persist it: memory.world_remember_share/app/alias/selector/path. "
+            "On successful reuse: memory.world_touch with boost_confidence. "
+            "Confidence decays 0.05/day — stale knowledge is naturally deprioritized. "
+            "For strategies: check memory.strategy_best before complex tasks. Record success/failure after. "
+            "Semantic search available: memory.semantic_search_strategies/entities for similarity-based lookup. "
             "\n\n"
-            "STRATEGY MEMORY: Before executing a complex task, check if a proven strategy exists: "
-            "use memory.strategy_best with the goal_type (e.g. 'open_document', 'install_software', 'find_file_on_share'). "
-            "If a strategy is found, follow its steps and call memory.strategy_reused to reinforce it. "
-            "After successfully completing a multi-step task, record the strategy: "
-            "use memory.strategy_record_success with goal_type, strategy_id, goal_summary, and the steps taken. "
-            "After a strategy fails, record it with memory.strategy_record_failure to avoid repeating the same approach. "
-            "Use memory.strategy_find to search for strategies by goal_type and optional query/tags. "
+            "== EXECUTION STRATEGY ==\n"
+            "1. INTERNAL vs DESKTOP: Prefer internal/headless processing. "
+            "office.outlook_read_latest reads emails without Outlook open. "
+            "office.word_create_document creates docs without Word open. "
+            "artifact.load processes files without opening apps. "
+            "ONLY use desktop/windows_ui tools when the user needs to SEE or INTERACT visually. "
+            "NEVER ask the user to open any application.\n"
+            "2. COMPLEX TASKS: Prefer built-in office tool over sandbox scripts for Office operations. "
+            "For custom processing, write sandbox scripts. Include error handling.\n"
+            "3. TOOL GAPS: Check dynamic_tool.list first. If nothing exists, write sandbox scripts. "
+            "For recurring needs, create dynamic tools.\n"
+            "4. FAILURE RECOVERY: When a tool fails, switch approach — do NOT just retry or give up. "
+            "Office COM fails -> sandbox scripts (openpyxl, python-docx). "
+            "Browser fails -> web tool or sandbox urllib. "
+            "Filesystem fails -> sandbox os/shutil. "
+            "Always prefer an alternative script over asking the user.\n"
             "\n\n"
-            "AUTOMATIC REUSE: When you need a UI selector, path, share, or app location, always check the world model first. "
-            "Prefer reusing a high-confidence cached value over re-discovering from scratch. "
-            "If a cached selector or path fails at runtime, lower its confidence (or delete it) and re-discover. "
+            "== DISCOVERY-FIRST APPROACH ==\n"
+            "When the target is not fully known, discover it by inspecting the system: "
+            "Explorer windows, mapped drives, UNC shares, network devices, installed software, web sources. "
+            "Translate imprecise names into likely Windows paths/commands and test hypotheses. "
+            "Use Get-ChildItem, Get-PSDrive, net use, net view, ping, and other shell commands for discovery. "
+            "If a file might be on a network share, use desktop.list_explorer_windows first. "
+            "Always verify actions with a follow-up check (list_windows, list_processes, filesystem.stat). "
             "\n\n"
-            "LONG-RUNNING OPERATIONS: The runtime now supports durable sessions and goal queues for complex multi-phase work. "
-            "Each run belongs to a session that persists across restarts and groups related objectives. "
-            "Job checkpoints are saved automatically so runs can resume from the last checkpoint after a backend restart. "
-            "For tasks that require multiple phases (discovery, installation, configuration, verification), "
-            "the planner decomposes them into ordered phases and the daemon processes them sequentially from a durable queue. "
-            "If a run is interrupted, the checkpoint contains the full agent_session, autonomy state, and runtime_context, "
-            "so the next attempt resumes from where it stopped rather than starting over. "
+            "== GRAPH-BASED RECOVERY ==\n"
+            "The runtime uses a state graph. Recovery determines the exact node to return to: "
+            "retry->executor, replan->planner, verify->reflection, ask_user->handoff, script->script_recovery. "
             "\n\n"
-            "AUTONOMOUS EXECUTION STRATEGY: You are a fully autonomous agent. For every task, decide the most efficient execution path: "
-            "\n"
-            "1. INTERNAL vs DESKTOP: Prefer internal processing when possible. "
-            "   - For reading/analyzing files (CSV, JSON, TXT, PDF, DOCX, XLSX, MSG): use artifact.load + artifact.transform instead of opening desktop apps. "
-            "   - For reading Excel data programmatically: use sandbox.execute_python with openpyxl instead of office.excel_read_range (avoids COM dependency). "
-            "   - For reading Outlook emails: use sandbox.execute_python with win32com.client directly instead of requiring the Outlook UI. "
-            "   - For searching document content: use artifact.load + artifact.transform instead of opening Word/PDF viewers. "
-            "   - Only use desktop tools (desktop.open_app, office.open_document, windows_ui) when the user explicitly needs to SEE or INTERACT with the application visually. "
-            "\n"
-            "2. COMPLEX TASK ORCHESTRATION: For tasks that combine multiple data sources (e.g., 'read emails, cross with spreadsheet, create report'): "
-            "   - Write a SINGLE sandbox.execute_python script that reads all sources, processes/cross-references the data, and produces the output. "
-            "   - This is more efficient and reliable than chaining 5+ separate tool calls. "
-            "   - Use openpyxl for Excel, win32com.client for Outlook, csv module for CSV, json module for JSON. "
-            "   - Include error handling in scripts so partial failures don't lose all progress. "
-            "\n"
-            "3. TOOL GAP FILLING: When you need a capability that no existing tool provides: "
-            "   - First check if dynamic_tool.list has a previously created tool for this purpose. "
-            "   - If not, write a sandbox.execute_python or sandbox.execute_powershell script to solve it directly. "
-            "   - For recurring needs, use dynamic_tool.create to make the solution reusable across runs. "
-            "   - Examples: parsing a specific file format, calling a REST API, transforming data between formats, automating a multi-step Windows task. "
-            "\n"
-            "4. INTELLIGENT FAILURE RECOVERY: When a tool fails, do NOT just retry or give up. Instead: "
-            "   - If Office COM fails: switch to sandbox scripts (openpyxl for Excel, python-docx for Word, artifact.load for PDF). "
-            "   - If browser/Playwright fails: use sandbox with urllib.request or the web tool as fallback. "
-            "   - If a filesystem operation fails: try sandbox.execute_python with os/shutil as an alternative path. "
-            "   - If a native tool is unavailable: write a PowerShell or Python script that achieves the same result. "
-            "   - Always prefer creating an alternative script approach over asking the user or declaring failure. "
-            "   - The recovery engine will automatically suggest script alternatives for many common failures. "
-            "\n\n"
-            "STATE GRAPH EXECUTION: The runtime uses a state graph (not a linear pipeline) to manage execution flow. "
-            "Each phase (planner, safety, executor, reflection, recovery) is a graph node with explicit edges. "
-            "When recovery is needed, the engine determines the exact graph node to return to instead of blindly retrying. "
-            "Recovery classifications include a target_node field indicating the precise re-entry point: "
-            "  - retry -> re-enters at 'executor' node to re-run the same tool call "
-            "  - rediscover_target/replan/switch_tooling -> re-enters at 'planner' node to redesign the approach "
-            "  - verify_outcome -> re-enters at 'reflection' node to re-assess the result "
-            "  - ask_user -> transitions to 'handoff' node for user interaction "
-            "  - execute_script -> enters 'script_recovery' node for sandbox-based alternatives "
-            "This graph-based recovery means each failure is handled at the optimal phase rather than starting over. "
-            "\n\n"
-            "Plan and generalize from the user's goal instead of relying on hardcoded workflows. "
-            "For complex tasks that mix web browsing, file manipulation and data extraction, decompose them into multiple autonomous steps. "
-            "Think of multi-step plans: first discover/locate targets, then process data, then produce output. "
-            "If a standard tool cannot accomplish a sub-step, create a sandbox script or dynamic tool to fill the gap. "
-            "Follow reusable search policies: discoverTarget -> verifyCandidate -> act -> verifyOutcome -> replan. "
-            "For Office work, prefer document_intelligence or share_discovery to locate files, office for COM-native actions, and windows_ui only if COM is unavailable or incomplete. "
-            "For browser flows that spawn native dialogs, use browser.bridge_native_dialog or windows_ui instead of assuming everything remains inside the DOM. "
-            "For ambiguous UI matches, prefer inspect_window/list_elements/find_element with progressively narrower selectors before asking the user. "
-            "Prefer direct, minimal actions, but when the target is not fully known, discover it by inspecting the system, open File Explorer windows, mapped drives, UNC shares, available devices, installed software, or web sources before asking the user. "
-            "When the user gives an imprecise name, translate it into likely Windows paths, application names, shares, drives, or commands and test those hypotheses one by one. "
-            "For files or folders on Windows, prefer practical discovery: inspect open Explorer windows, enumerate mapped drives, inspect network shares, search recent documents, search document content, and use shell-based searches such as Get-ChildItem, Get-PSDrive, net use, or other native commands before giving up. "
-            "If a file might be on a network share already open in Explorer, use desktop.list_explorer_windows first to capture the real path instead of guessing the UNC root. "
-            "For requests like opening Word, Excel, Explorer, a folder, or a file, prefer desktop.open_app, desktop.open_path, or desktop.open_file, then verify the result with desktop.wait_for_window, desktop.list_windows, or desktop.list_processes. "
-            "If a tool returns a partial result because the action still needs verification, do that verification before declaring success. "
-            "Do not stop after the first failure when there are still plausible hypotheses to test. Replan aggressively using the real error or tool output. "
-            "When a native tool fails or is unavailable, consider writing a sandbox script or creating a dynamic tool to achieve the same goal through an alternative path. "
             "Never ask for or reveal API keys or secrets. "
-            "When a tool is necessary, call it with well-formed arguments. "
-            "Use request_user_input only when the required information cannot be discovered with the available tools, or when a human decision is required. "
-            "Treat every tool result as an observation. If a tool returns blocked, partial, failed, or needs_input, use that observation to replan before giving up. "
-            "When the goal is achieved, answer concisely."
+            "Call tools with well-formed, complete arguments — especially 'content' and 'code' fields which must contain the full text. "
+            "Treat every tool result as an observation. Replan on failure. "
+            "When the goal is achieved, respond concisely with what was done and where results are."
         )
+
+    @staticmethod
+    def _partition_by_dependency(
+        planned: List[tuple],
+    ) -> tuple:
+        """Split planned (tool_call, task) pairs into independent and dependent groups.
+
+        Independent tasks can execute in parallel. Dependent tasks reference outputs
+        from earlier tasks in the same batch (detected by matching tool/action patterns
+        that typically chain — e.g. artifact.load followed by artifact.transform on the
+        loaded result, or reading data then writing it).
+
+        Heuristic: the first N tasks that are all read/inspection-type (no mutation and
+        no reference to sibling outputs) are independent. Once a mutation or a likely
+        data-flow dependency is detected, all remaining tasks are dependent.
+        """
+        if len(planned) <= 1:
+            return planned, []
+
+        MUTATION_TYPES = {"execute_python", "execute_powershell", "write_result", "create",
+                          "word_create_document", "save_as_document", "export_pdf",
+                          "draft_email_with_attachment", "delete", "move", "copy"}
+
+        independent = []
+        dependent = []
+        seen_outputs = set()
+        dependency_detected = False
+
+        for tool_call, task in planned:
+            action = task.get("action", "")
+            params = task.get("params") or {}
+
+            if dependency_detected:
+                dependent.append((tool_call, task))
+                continue
+
+            param_values = " ".join(str(v) for v in params.values()).lower()
+            refs_sibling = any(tid in param_values for tid in seen_outputs if tid)
+
+            if action in MUTATION_TYPES or refs_sibling:
+                dependency_detected = True
+                dependent.append((tool_call, task))
+            else:
+                independent.append((tool_call, task))
+                seen_outputs.add(task.get("id", ""))
+
+        return independent, dependent
 
     def _preview_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         preview = dict(task.get("params", {}))

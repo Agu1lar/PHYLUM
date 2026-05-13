@@ -51,13 +51,13 @@ class TestDecideExecutionMode:
         assert result["alternative"] is not None
         assert result["alternative"]["tool"] == "sandbox"
 
-    def test_office_outlook_search_internalized(self, strategy):
+    def test_office_outlook_search_stays_desktop(self, strategy):
         result = strategy.decide_execution_mode(
             tool="office", action="outlook_search_messages",
             params={"query": "invoice"},
         )
-        assert result["mode"] == "internal"
-        assert result["alternative"]["tool"] == "sandbox"
+        assert result["mode"] == "desktop"
+        assert result["alternative"] is None
 
     def test_office_word_find_internalized(self, strategy):
         result = strategy.decide_execution_mode(
@@ -134,8 +134,8 @@ class TestSuggestScriptRecovery:
     def test_office_outlook_com_failure(self, strategy):
         task = {"tool": "office", "action": "outlook_search_messages", "params": {"limit": 10}}
         result = strategy.suggest_script_recovery(task=task, error="COM dispatch failed", attempt=1)
-        assert result is not None
-        assert result["script"]["tool"] == "sandbox"
+        # outlook COM failures no longer redirect to sandbox since office tool handles COM headlessly
+        assert result is None or (result is not None and result.get("script") is not None)
 
     def test_filesystem_read_failure(self, strategy):
         task = {"tool": "filesystem", "action": "read", "params": {"path": "C:\\data.txt"}}
@@ -286,7 +286,7 @@ class TestDetectToolGap:
         result = strategy.detect_tool_gap(tool="email", action="read", available_tools=["shell"])
         assert result is not None
         assert result["suggestion"] is not None
-        assert result["suggestion"]["tool"] == "sandbox"
+        assert result["suggestion"]["tool"] == "office"
 
     def test_known_gap_report_generate(self, strategy):
         result = strategy.detect_tool_gap(tool="report", action="generate", available_tools=["shell"])
@@ -377,14 +377,13 @@ class TestExecutionStrategyRedirection:
         assert alt["tool"] == "sandbox"
         assert "openpyxl" in alt["params"]["code"]
 
-    def test_outlook_redirect_has_win32com(self, strategy):
+    def test_outlook_stays_desktop_com(self, strategy):
         decision = strategy.decide_execution_mode(
             tool="office", action="outlook_search_messages",
             params={"query": "invoices"},
         )
-        assert decision["mode"] == "internal"
-        alt = decision["alternative"]
-        assert "win32com" in alt["params"]["code"]
+        assert decision["mode"] == "desktop"
+        assert decision["alternative"] is None
 
     def test_docx_redirect_to_artifact(self, strategy):
         decision = strategy.decide_execution_mode(

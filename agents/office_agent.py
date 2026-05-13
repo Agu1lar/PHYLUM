@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
 from __future__ import annotations
 
 import asyncio
@@ -155,6 +158,70 @@ class OfficeAgent:
             app.Quit()
             rows = values if isinstance(values, tuple) else ((values,),)
             return {"path": workbook_path, "sheet": sheet_name or sheet.Name, "range": range_address, "values": rows}
+
+        return await asyncio.to_thread(_run)
+
+    async def outlook_read_latest(self, limit: int = 10, folder: str = "inbox") -> Dict[str, Any]:
+        """Read the N most recent emails from Outlook. Works in background without Outlook being visible."""
+        def _run() -> Dict[str, Any]:
+            app = self._dispatch("Outlook.Application")
+            namespace = app.GetNamespace("MAPI")
+            folder_id = {"inbox": 6, "sent": 5, "drafts": 16, "outbox": 4}.get(folder.lower(), 6)
+            target = namespace.GetDefaultFolder(folder_id)
+            items = target.Items
+            items.Sort("[ReceivedTime]", True)
+            messages: List[Dict[str, Any]] = []
+            count = 0
+            for item in items:
+                if count >= limit:
+                    break
+                try:
+                    attachments = []
+                    try:
+                        for idx in range(1, item.Attachments.Count + 1):
+                            attachments.append(item.Attachments.Item(idx).FileName)
+                    except Exception:
+                        pass
+                    body_text = getattr(item, "Body", "") or ""
+                    messages.append({
+                        "subject": getattr(item, "Subject", ""),
+                        "sender": getattr(item, "SenderName", ""),
+                        "sender_email": getattr(item, "SenderEmailAddress", ""),
+                        "to": getattr(item, "To", ""),
+                        "received_time": str(getattr(item, "ReceivedTime", "")),
+                        "body": body_text[:3000],
+                        "attachments": attachments,
+                    })
+                    count += 1
+                except Exception:
+                    continue
+            return {"folder": folder, "count": len(messages), "messages": messages}
+
+        return await asyncio.to_thread(_run)
+
+    async def word_create_document(
+        self,
+        content: str,
+        output_path: str,
+        *,
+        title: Optional[str] = None,
+        visible: bool = False,
+    ) -> Dict[str, Any]:
+        """Create a new Word document with the given text content. Works headlessly."""
+        def _run() -> Dict[str, Any]:
+            destination = str(Path(output_path).resolve())
+            app = self._dispatch("Word.Application")
+            app.Visible = visible
+            doc = app.Documents.Add()
+            if title:
+                doc.Content.Text = f"{title}\n\n{content}"
+            else:
+                doc.Content.Text = content
+            doc.SaveAs2(destination)
+            doc.Close(False)
+            if not visible:
+                app.Quit()
+            return {"path": destination, "title": title}
 
         return await asyncio.to_thread(_run)
 

@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "agente-desktop",
+  "productName": "phylum",
   "version": "0.1.0",
-  "identifier": "com.agente.desktop",
+  "identifier": "com.phylum.app",
   "build": {
     "beforeBuildCommand": "powershell -ExecutionPolicy Bypass -File ../build_backend_sidecar.ps1 && npm run build",
     "beforeDevCommand": "npm run dev",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Agente Desktop",
+        "title": "PHYLUM",
         "width": 1440,
         "height": 920,
         "minWidth": 1100,

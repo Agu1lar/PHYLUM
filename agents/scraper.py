@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
 """High level scraping primitives built on top of Playwright contexts/pages.
 Provides retry/timeout/screenshot on error and structured extraction helpers.
 """

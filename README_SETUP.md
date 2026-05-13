@@ -1,6 +1,6 @@
 Setup & CI instructions (resumo)
 
-Este documento descreve passos para preparar o ambiente de desenvolvimento e CI para o projeto AgenteDesktop.
+Este documento descreve passos para preparar o ambiente de desenvolvimento e CI para o projeto PHYLUM.
 
 Requisitos locais
 - Windows: PowerShell 7+ (pwsh) recomendado. Adicione pwsh ao PATH.

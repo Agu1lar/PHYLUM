@@ -1,4 +1,4 @@
-﻿Frontend scaffold for Agente Desktop
+﻿Frontend scaffold for PHYLUM
 
 Tech stack: Tauri + React + TypeScript + Vite + Tailwind
 

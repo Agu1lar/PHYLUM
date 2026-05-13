@@ -53,7 +53,7 @@ async def test_openrouter_uses_openai_compatible_transport(monkeypatch):
     assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer or-key"
     assert captured["headers"]["HTTP-Referer"] == "http://127.0.0.1:5173"
-    assert captured["headers"]["X-Title"] == "Agente Desktop"
+    assert captured["headers"]["X-Title"] == "PHYLUM"
 
 
 @pytest.mark.asyncio

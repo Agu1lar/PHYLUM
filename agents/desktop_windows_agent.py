@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
 from __future__ import annotations
 
 import asyncio
@@ -651,7 +654,7 @@ class DesktopWindowsAgent:
         await asyncio.to_thread(_clipboard_set, text)
         return {"text": text}
 
-    async def notify(self, message: str, title: str = "Agente Desktop") -> Dict[str, Any]:
+    async def notify(self, message: str, title: str = "PHYLUM") -> Dict[str, Any]:
         threading.Thread(target=_notify, args=(title, message), daemon=True).start()
         return {"title": title, "message": message}
 

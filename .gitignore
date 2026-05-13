@@ -1,58 +1,92 @@
-# Python
+# ============================================================
+# PHYLUM .gitignore — keeps the repo clean for public release
+# ============================================================
+
+# ── Python ──────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
+*.pyo
 *.so
 *.egg-info/
 *.egg
 *.manifest
 *.spec
 
-# Virtualenvs
+# ── Virtual environments ────────────────────────────────────
 .venv/
 venv/
 env/
+.venv_pkgs.txt
+venv_pkgs.txt
 
-# Editor/IDE
+# ── IDE / Editor ────────────────────────────────────────────
 .vscode/
 .idea/
 *.sublime-workspace
 *.sublime-project
+*.swp
+*.swo
+*~
 
-# OS files
+# ── OS files ────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Logs and databases
-*.log
-*.sqlite3
+# ── Environment & secrets (NEVER commit) ────────────────────
+.env
+.env.*
+secrets.json
+credentials.json
+*.pem
+*.key
+
+# ── Databases (runtime state, not source) ───────────────────
 *.db
+*.sqlite3
 agent_state.db
 
-# Test caches
+# ── Logs ────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Test caches ─────────────────────────────────────────────
 .pytest_cache/
 coverage.xml
 htmlcov/
+.coverage
 
-# Node
-node_modules/
-frontend/node_modules/
-dist/
-
-# Env
-.env
-.env.*
-
-# Build
+# ── Build artifacts — Python (PyInstaller) ──────────────────
+.build/
 build/
 dist/
+*.exe
+*.msi
 
-# Temporary files
+# ── Build artifacts — Rust / Tauri ──────────────────────────
+frontend/src-tauri/target/
+frontend/src-tauri/binaries/*.exe
+frontend/src-tauri/gen/schemas/
+
+# ── Build artifacts — Frontend ──────────────────────────────
+frontend/dist/
+frontend/node_modules/
+node_modules/
+
+# ── LanceDB / Vector data (runtime, rebuilt on first use) ───
+lance_data/
+*.lance
+
+# ── Agent workspace (user runtime data) ─────────────────────
+agent_workspace/
+
+# ── Package lock files (optional — reproducible builds) ─────
+# Uncomment if you prefer NOT to track lock files:
+# package-lock.json
+# frontend/package-lock.json
+# frontend/src-tauri/Cargo.lock
+
+# ── Misc temp files ─────────────────────────────────────────
 *.tmp
-*.swp
-
-# Secrets
-secrets.json
-
-# Local helper outputs
-.venv_pkgs.txt
-venv_pkgs.txt
+*.bak
+*.orig

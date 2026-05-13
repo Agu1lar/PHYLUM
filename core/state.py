@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
 from typing import TypedDict, Optional, Dict, Any, List
 from pydantic import BaseModel
 from datetime import datetime

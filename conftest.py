@@ -1,4 +1,13 @@
 import sys
+from pathlib import Path
+
+_root = Path(__file__).resolve().parent
+for _sub in ("core", "tools", "agents", "nodes", "models", "providers",
+             "safety", "memory", "execution", "persistence"):
+    _p = str(_root / _sub)
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 import shutil
 import pytest
 

@@ -32,11 +32,11 @@ class AgenticDiscoveryTests(unittest.IsolatedAsyncioTestCase):
     def test_agentic_prompt_explicitly_guides_shell_and_explorer_discovery(self):
         prompt = AgenticLoop(client=None, safety=None, tool_router=None, reflection=None)._system_prompt()
 
-        self.assertIn("shell tool is available", prompt)
+        self.assertIn("shell", prompt)
+        self.assertIn("PowerShell", prompt)
         self.assertIn("desktop.list_explorer_windows", prompt)
         self.assertIn("Get-PSDrive", prompt)
-        self.assertIn("desktop.open_app", prompt)
-        self.assertIn("desktop.wait_for_window", prompt)
+        self.assertIn("open apps", prompt)
 
     async def test_planner_routes_open_word_to_open_app(self):
         plan, validation = await PlannerAgent().parse("open word")

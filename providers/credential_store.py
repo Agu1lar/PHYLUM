@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
 from __future__ import annotations
 
 import asyncio
@@ -35,7 +38,7 @@ class ProviderSettings(BaseModel):
 
 
 class CredentialStore:
-    SERVICE_NAME = "AgenteDesktop.providers"
+    SERVICE_NAME = "PHYLUM.providers"
 
     def __init__(self, persistence: Optional[Persistence] = None):
         self.persistence = persistence or Persistence.get()

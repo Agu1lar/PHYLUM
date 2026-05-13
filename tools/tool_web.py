@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
 import hashlib
 import logging
 from html.parser import HTMLParser
@@ -114,7 +117,7 @@ class WebTool(BaseTool):
 
             if payload.action == "search_web":
                 url = f"https://html.duckduckgo.com/html/?q={quote_plus(payload.query or '')}"
-                response = await client.get(url, headers={"User-Agent": "AgenteDesktop/1.0"})
+                response = await client.get(url, headers={"User-Agent": "PHYLUM/1.0"})
                 parser = _LinkParser()
                 parser.feed(response.text)
                 candidates = []

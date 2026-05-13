@@ -1,8 +1,8 @@
 [package]
-name = "agente-desktop"
+name = "phylum"
 version = "0.1.0"
-description = "Agente Desktop"
-authors = ["Agente Desktop"]
+description = "PHYLUM"
+authors = ["Aguilar"]
 edition = "2021"
 
 [package.metadata.bundle]

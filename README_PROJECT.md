@@ -1,6 +1,6 @@
-# Agente Desktop
+# PHYLUM
 
-`Agente Desktop` e um runtime local para automacao orientada por linguagem natural no Windows. O projeto combina um backend FastAPI, um frontend React/Vite com WebSocket em tempo real e um runtime operacional com:
+`PHYLUM` e um runtime local para automacao orientada por linguagem natural no Windows. O projeto combina um backend FastAPI, um frontend React/Vite com WebSocket em tempo real e um runtime operacional com:
 
 - `planner -> safety -> tool router -> reflection`
 - loop `agentic` com tool-calling por provider LLM

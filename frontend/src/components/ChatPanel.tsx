@@ -390,7 +390,7 @@ const ChatPanel: React.FC<{ showAdvanced?: boolean }> = ({ showAdvanced = true }
       </div>
       ) : (
         <div className="mb-4 shrink-0">
-          <div className="text-xs uppercase tracking-[0.2em] text-blue-300">Agente Desktop</div>
+          <div className="text-xs uppercase tracking-[0.2em] text-blue-300">PHYLUM</div>
           <h1 className="mt-2 text-2xl font-semibold text-white">Converse com a IA</h1>
           <p className="mt-2 text-sm text-gray-400">
             Descreva o que voce quer fazer no computador. As configuracoes e os paineis tecnicos ficam em avancado.

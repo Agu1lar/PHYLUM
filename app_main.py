@@ -1,3 +1,16 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
+import sys
+from pathlib import Path
+
+_root = Path(__file__).resolve().parent
+for _sub in ("core", "tools", "agents", "nodes", "models", "providers",
+             "safety", "memory", "execution", "persistence"):
+    _p = str(_root / _sub)
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 import asyncio
 import ctypes
 import importlib.util
@@ -433,7 +446,7 @@ async def set_approval(approval_id: str, payload: ApprovalResolutionRequest):
 
 @app.get('/health')
 async def healthcheck():
-    return {"ok": True, "service": "agente-desktop-backend"}
+    return {"ok": True, "service": "phylum-backend"}
 
 
 def _latest_windows_installer_path() -> Optional[Path]:

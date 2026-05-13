@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default desktop capabilities for Agente Desktop.",
+  "description": "Default desktop capabilities for PHYLUM.",
   "windows": [
     "main",
     "approval-widget"

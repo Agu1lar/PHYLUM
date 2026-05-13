@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
 from __future__ import annotations
 
 import logging
@@ -15,7 +18,7 @@ logger = logging.getLogger(__name__)
 class OfficeInput(BaseModel):
     action: str = Field(
         ...,
-        pattern="^(open_document|export_pdf|save_as_document|list_workbook_sheets|word_find_text|excel_read_range|outlook_search_messages|draft_email_with_attachment|reveal_active_document_path)$",
+        pattern="^(open_document|export_pdf|save_as_document|list_workbook_sheets|word_find_text|excel_read_range|outlook_search_messages|outlook_read_latest|word_create_document|draft_email_with_attachment|reveal_active_document_path)$",
     )
     path: Optional[str] = None
     output_path: Optional[str] = None
@@ -23,11 +26,14 @@ class OfficeInput(BaseModel):
     to: Optional[str] = None
     subject: Optional[str] = None
     body: Optional[str] = None
+    content: Optional[str] = None
+    title: Optional[str] = None
     attachment_path: Optional[str] = None
     query: Optional[str] = None
     sheet_name: Optional[str] = None
     range_address: Optional[str] = None
     limit: Optional[int] = None
+    folder: Optional[str] = None
 
 
 class OfficeTool(BaseTool):
@@ -51,6 +57,8 @@ class OfficeTool(BaseTool):
             raise ValueError("save_as_document requires output_path")
         if payload.action == "reveal_active_document_path" and not payload.app_name:
             raise ValueError("reveal_active_document_path requires app_name")
+        if payload.action == "word_create_document" and (not payload.output_path or not payload.content):
+            raise ValueError("word_create_document requires output_path and content")
 
     async def _run(self, payload: OfficeInput) -> ActionResult:
         target = {
@@ -64,6 +72,9 @@ class OfficeTool(BaseTool):
                 "query": payload.query,
                 "sheet_name": payload.sheet_name,
                 "range_address": payload.range_address,
+                "folder": payload.folder,
+                "limit": payload.limit,
+                "title": payload.title,
             }.items()
             if value is not None
         }
@@ -96,6 +107,20 @@ class OfficeTool(BaseTool):
                 details = await self.agent.outlook_search_messages(payload.query or "", limit=payload.limit or 25)
                 summary = f"Busquei mensagens no Outlook por {payload.query}."
                 changed = False
+            elif payload.action == "outlook_read_latest":
+                details = await self.agent.outlook_read_latest(limit=payload.limit or 10, folder=payload.folder or "inbox")
+                count = details.get("count", 0)
+                summary = f"Li {count} email(s) mais recente(s) do Outlook."
+                changed = False
+            elif payload.action == "word_create_document":
+                details = await self.agent.word_create_document(
+                    content=payload.content or "",
+                    output_path=payload.output_path or "",
+                    title=payload.title,
+                    visible=False,
+                )
+                summary = f"Criei documento Word em {payload.output_path}."
+                changed = True
             elif payload.action == "draft_email_with_attachment":
                 details = await self.agent.draft_email_with_attachment(
                     to=payload.to,

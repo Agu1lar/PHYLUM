@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
 """Prompt Cache: avoids rebuilding and re-serializing large static payloads on every LLM call.
 
 The system prompt (~3000+ tokens) and tool definitions (~35+ tools) are identical

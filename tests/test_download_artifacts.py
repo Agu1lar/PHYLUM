@@ -11,8 +11,8 @@ class DownloadArtifactsTests(unittest.TestCase):
             from tempfile import TemporaryDirectory
 
             with TemporaryDirectory() as temp_dir:
-                older = app_main.Path(temp_dir) / "agente-desktop_0.0.9_x64-setup.exe"
-                newer = app_main.Path(temp_dir) / "agente-desktop_0.1.0_x64-setup.exe"
+                older = app_main.Path(temp_dir) / "phylum_0.0.9_x64-setup.exe"
+                newer = app_main.Path(temp_dir) / "phylum_0.1.0_x64-setup.exe"
                 older.write_bytes(b"old")
                 newer.write_bytes(b"new")
                 os.utime(older, (1, 1))

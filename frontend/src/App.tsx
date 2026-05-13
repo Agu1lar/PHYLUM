@@ -145,7 +145,7 @@ export default function App() {
         <div className="flex h-full flex-col overflow-hidden p-4">
           <div className="mb-4 flex shrink-0 items-center justify-between gap-4">
             <div>
-              <div className="text-xs uppercase tracking-[0.2em] text-blue-300">Agente Desktop</div>
+              <div className="text-xs uppercase tracking-[0.2em] text-blue-300">PHYLUM</div>
               <div className="mt-1 text-sm text-gray-400">
                 {activeView === 'settings' ? 'Configuracoes do agente e dos provedores.' : 'Assistente local focado em automacao por linguagem natural.'}
               </div>

@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
 """State Graph Engine: replaces linear pipeline execution with a directed graph.
 
 Nodes represent execution phases (plan, safety, execute, reflect, recover, checkpoint).

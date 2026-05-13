@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
 """Execution Strategy Engine: autonomous decision-making for the agent runtime.
 
 Responsibilities:
@@ -32,19 +35,6 @@ FILE_EXTENSIONS_DESKTOP = {
 }
 
 SCRIPT_TEMPLATES = {
-    "read_email_outlook": textwrap.dedent("""\
-        import win32com.client
-        outlook = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
-        inbox = outlook.GetDefaultFolder(6)
-        messages = inbox.Items
-        messages.Sort("[ReceivedTime]", True)
-        results = []
-        for i in range(min({count}, messages.Count)):
-            msg = messages[i + 1]
-            results.append({{"subject": msg.Subject, "sender": msg.SenderName, "received": str(msg.ReceivedTime), "body": msg.Body[:500]}})
-        print(__import__("json").dumps(results, ensure_ascii=False, indent=2))
-    """),
-
     "read_excel_data": textwrap.dedent("""\
         import json
         try:
@@ -335,15 +325,7 @@ class ExecutionStrategy:
                 }
 
         if tool == "office" and action == "outlook_search_messages":
-            return {
-                "tool": "sandbox",
-                "action": "execute_python",
-                "params": {
-                    "code": SCRIPT_TEMPLATES["read_email_outlook"].format(count=params.get("limit", 20)),
-                    "timeout": 30,
-                },
-                "reason": "Outlook messages can be read via COM without opening the Outlook UI",
-            }
+            return None  # outlook_search_messages already works headlessly via COM
 
         if tool == "office" and action in {"word_find_text", "inspect_document"}:
             path = params.get("path", "")
@@ -381,15 +363,8 @@ class ExecutionStrategy:
                         "action": "load",
                         "params": {"path": path},
                     }
-            if action == "outlook_search_messages":
-                return {
-                    "tool": "sandbox",
-                    "action": "execute_python",
-                    "params": {
-                        "code": SCRIPT_TEMPLATES["read_email_outlook"].format(count=params.get("limit", 20)),
-                        "timeout": 30,
-                    },
-                }
+            if action in {"outlook_search_messages", "outlook_read_latest"}:
+                return None  # COM-based office tool already works headlessly
 
         if tool == "filesystem" and action in {"read", "list", "stat"}:
             path = params.get("path", "")
@@ -493,14 +468,14 @@ class ExecutionStrategy:
     def _generate_tool_gap_script(self, tool: str, action: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         known_gaps = {
             ("email", "read"): lambda p: {
-                "tool": "sandbox",
-                "action": "execute_python",
-                "params": {"code": SCRIPT_TEMPLATES["read_email_outlook"].format(count=p.get("count", 20)), "timeout": 30},
+                "tool": "office",
+                "action": "outlook_read_latest",
+                "params": {"limit": p.get("count", 10)},
             },
             ("email", "search"): lambda p: {
-                "tool": "sandbox",
-                "action": "execute_python",
-                "params": {"code": SCRIPT_TEMPLATES["read_email_outlook"].format(count=p.get("count", 50)), "timeout": 30},
+                "tool": "office",
+                "action": "outlook_search_messages",
+                "params": {"query": p.get("query", ""), "limit": p.get("count", 25)},
             },
             ("report", "generate"): lambda p: {
                 "tool": "sandbox",

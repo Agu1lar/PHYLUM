@@ -1,3 +1,6 @@
+# Copyright (C) 2026 Aguilar. This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by the Free Software Foundation,
+# either version 3 of the License, or any later version.
 from __future__ import annotations
 
 import json
@@ -18,6 +21,8 @@ class NormalizedToolCall(BaseModel):
 class AgentTurnResult(BaseModel):
     content: str = ""
     tool_calls: List[NormalizedToolCall] = Field(default_factory=list)
+    thinking: str = ""
+    thinking_blocks: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class MultiProviderClient:
@@ -160,6 +165,8 @@ class MultiProviderClient:
                 )
         return AgentTurnResult(content="\n".join(chunk for chunk in text_chunks if chunk).strip(), tool_calls=tool_calls)
 
+    ANTHROPIC_THINKING_MODELS = {"claude-sonnet-4-6", "claude-opus-4-6", "claude-opus-4-7"}
+
     async def _complete_anthropic(
         self,
         *,
@@ -180,12 +187,16 @@ class MultiProviderClient:
                 if isinstance(src, dict) and "cache_control" in src:
                     tool["cache_control"] = src["cache_control"]
 
+        use_thinking = self._model_supports_thinking(model)
+
         payload: Dict[str, Any] = {
             "model": model,
             "messages": anthropic_messages,
             "tools": anthropic_tools,
-            "max_tokens": 1024,
+            "max_tokens": 16000 if use_thinking else 4096,
         }
+        if use_thinking:
+            payload["thinking"] = {"type": "adaptive"}
         if system:
             system_msg = next((m for m in messages if m.get("role") == "system"), None)
             anthropic_system = (system_msg or {}).get("_anthropic_system") if system_msg else None
@@ -199,16 +210,30 @@ class MultiProviderClient:
         }
         if use_cache or (isinstance(payload.get("system"), list)):
             headers["anthropic-beta"] = "prompt-caching-2024-07-31"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+
+        timeout = max(self.timeout, 120.0) if use_thinking else self.timeout
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(f"{base_url.rstrip('/')}/messages", json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
+
         text_chunks: List[str] = []
         tool_calls: List[NormalizedToolCall] = []
+        thinking_text_chunks: List[str] = []
+        thinking_blocks: List[Dict[str, Any]] = []
+
         for block in data.get("content", []):
-            if block.get("type") == "text":
+            block_type = block.get("type")
+            if block_type == "thinking":
+                text = block.get("thinking", "")
+                if text:
+                    thinking_text_chunks.append(text)
+                thinking_blocks.append(block)
+            elif block_type == "redacted_thinking":
+                thinking_blocks.append(block)
+            elif block_type == "text":
                 text_chunks.append(block.get("text", ""))
-            elif block.get("type") == "tool_use":
+            elif block_type == "tool_use":
                 tool_calls.append(
                     NormalizedToolCall(
                         id=block["id"],
@@ -216,7 +241,17 @@ class MultiProviderClient:
                         arguments=block.get("input", {}),
                     )
                 )
-        return AgentTurnResult(content="\n".join(chunk for chunk in text_chunks if chunk).strip(), tool_calls=tool_calls)
+
+        return AgentTurnResult(
+            content="\n".join(chunk for chunk in text_chunks if chunk).strip(),
+            tool_calls=tool_calls,
+            thinking="\n".join(thinking_text_chunks).strip(),
+            thinking_blocks=thinking_blocks,
+        )
+
+    def _model_supports_thinking(self, model: str) -> bool:
+        base = model.split("-2")[0] if "-2" in model else model
+        return any(base.startswith(prefix) for prefix in ("claude-sonnet-4", "claude-opus-4"))
 
     def _to_anthropic_tools(self, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         anthropic_tools: List[Dict[str, Any]] = []
@@ -255,6 +290,9 @@ class MultiProviderClient:
                 )
                 continue
             blocks: List[Dict[str, Any]] = []
+            # Thinking blocks must precede text/tool_use in assistant content
+            for tb in message.get("_thinking_blocks") or []:
+                blocks.append(tb)
             content = self._coerce_content(message.get("content"))
             if content:
                 blocks.append({"type": "text", "text": content})
@@ -368,7 +406,7 @@ class MultiProviderClient:
         headers = {"Authorization": f"Bearer {api_key}"}
         if provider_id == "openrouter":
             headers["HTTP-Referer"] = "http://127.0.0.1:5173"
-            headers["X-Title"] = "Agente Desktop"
+            headers["X-Title"] = "PHYLUM"
         return headers
 
     def _coerce_content(self, value: Any) -> str:
