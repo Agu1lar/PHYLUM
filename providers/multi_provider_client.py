@@ -3,13 +3,40 @@
 # either version 3 of the License, or any later version.
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from typing import Any, Dict, List, Optional
 
 import httpx
 from pydantic import BaseModel, Field
 
 from provider_registry import get_provider
+
+logger = logging.getLogger(__name__)
+
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 529}
+_MAX_LLM_RETRIES = 3
+_BACKOFF_BASE = 2.0
+
+
+class LLMApiError(Exception):
+    """Raised when the LLM API returns an unrecoverable error after retries."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str = "",
+        model: str = "",
+        status_code: int = 0,
+        response_body: str = "",
+    ):
+        super().__init__(message)
+        self.provider = provider
+        self.model = model
+        self.status_code = status_code
+        self.response_body = response_body
 
 
 class NormalizedToolCall(BaseModel):
@@ -27,7 +54,7 @@ class AgentTurnResult(BaseModel):
 
 
 class MultiProviderClient:
-    def __init__(self, *, timeout: float = 45.0):
+    def __init__(self, *, timeout: float = 30.0):
         self.timeout = timeout
 
     async def complete(
@@ -41,6 +68,66 @@ class MultiProviderClient:
         base_url: Optional[str] = None,
     ) -> AgentTurnResult:
         provider_id = get_provider(provider).provider
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, _MAX_LLM_RETRIES + 1):
+            try:
+                return await self._dispatch(
+                    provider_id=provider_id,
+                    api_key=api_key,
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    base_url=base_url,
+                )
+            except httpx.HTTPStatusError as exc:
+                last_exc = exc
+                status = exc.response.status_code
+                if status not in _RETRYABLE_STATUS_CODES or attempt == _MAX_LLM_RETRIES:
+                    logger.error(
+                        "LLM API %s/%s returned HTTP %d (attempt %d/%d, non-retryable or exhausted)",
+                        provider_id, model, status, attempt, _MAX_LLM_RETRIES,
+                    )
+                    raise LLMApiError(
+                        f"LLM API error: HTTP {status} from {provider_id}/{model}",
+                        provider=provider_id,
+                        model=model,
+                        status_code=status,
+                        response_body=exc.response.text[:500] if exc.response else "",
+                    ) from exc
+                retry_after = self._parse_retry_after(exc.response)
+                wait = retry_after if retry_after else min(_BACKOFF_BASE ** attempt, 30.0)
+                logger.warning(
+                    "LLM API %s/%s returned HTTP %d — retrying in %.1fs (attempt %d/%d)",
+                    provider_id, model, status, wait, attempt, _MAX_LLM_RETRIES,
+                )
+                await asyncio.sleep(wait)
+            except (httpx.TimeoutException, httpx.ConnectError) as exc:
+                last_exc = exc
+                if attempt == _MAX_LLM_RETRIES:
+                    raise LLMApiError(
+                        f"LLM API connection failed after {_MAX_LLM_RETRIES} attempts: {exc}",
+                        provider=provider_id,
+                        model=model,
+                        status_code=0,
+                    ) from exc
+                wait = min(_BACKOFF_BASE ** attempt, 15.0)
+                logger.warning(
+                    "LLM API %s/%s connection issue: %s — retrying in %.1fs (attempt %d/%d)",
+                    provider_id, model, exc, wait, attempt, _MAX_LLM_RETRIES,
+                )
+                await asyncio.sleep(wait)
+        raise last_exc or RuntimeError("LLM API call failed unexpectedly")
+
+    async def _dispatch(
+        self,
+        *,
+        provider_id: str,
+        api_key: str,
+        model: str,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        base_url: Optional[str] = None,
+    ) -> AgentTurnResult:
         if provider_id in {"openai", "openai_compatible", "openrouter"}:
             return await self._complete_openai_compatible(
                 provider_id=provider_id,
@@ -66,7 +153,19 @@ class MultiProviderClient:
                 tools=tools,
                 base_url=base_url or get_provider(provider_id).base_url,
             )
-        raise ValueError(f"unsupported provider: {provider}")
+        raise ValueError(f"unsupported provider: {provider_id}")
+
+    @staticmethod
+    def _parse_retry_after(response: Optional[httpx.Response]) -> Optional[float]:
+        if response is None:
+            return None
+        header = response.headers.get("retry-after")
+        if not header:
+            return None
+        try:
+            return float(header)
+        except (ValueError, TypeError):
+            return None
 
     async def test_connection(
         self,
@@ -110,6 +209,7 @@ class MultiProviderClient:
             "messages": messages,
             "tools": tools,
             "tool_choice": "auto",
+            "max_tokens": 2048,
         }
         headers = self._openai_compatible_headers(api_key=api_key, provider_id=provider_id)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -192,29 +292,32 @@ class MultiProviderClient:
 
         use_thinking = self._model_supports_thinking(model)
 
+        if anthropic_tools:
+            anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
+
         payload: Dict[str, Any] = {
             "model": model,
             "messages": anthropic_messages,
             "tools": anthropic_tools,
-            "max_tokens": 16000 if use_thinking else 4096,
+            "max_tokens": 8000 if use_thinking else 2048,
         }
         if use_thinking:
             payload["thinking"] = {"type": "adaptive"}
         if system:
-            system_msg = next((m for m in messages if m.get("role") == "system"), None)
-            anthropic_system = (system_msg or {}).get("_anthropic_system") if system_msg else None
-            if anthropic_system and isinstance(anthropic_system, list):
-                payload["system"] = anthropic_system
-            else:
-                payload["system"] = system
+            payload["system"] = [
+                {
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
         headers = {
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
+            "anthropic-beta": "prompt-caching-2024-07-31",
         }
-        if use_cache or (isinstance(payload.get("system"), list)):
-            headers["anthropic-beta"] = "prompt-caching-2024-07-31"
 
-        timeout = max(self.timeout, 120.0) if use_thinking else self.timeout
+        timeout = max(self.timeout, 60.0) if use_thinking else self.timeout
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(f"{base_url.rstrip('/')}/messages", json=payload, headers=headers)
             response.raise_for_status()
@@ -293,21 +396,19 @@ class MultiProviderClient:
                     system_parts.append(self._coerce_content(message.get("content")))
                 continue
             if role == "tool":
-                converted.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": message["tool_call_id"],
-                                "content": self._coerce_content(message.get("content")),
-                            }
-                        ],
-                    }
-                )
+                tool_result_block = {
+                    "type": "tool_result",
+                    "tool_use_id": message["tool_call_id"],
+                    "content": self._coerce_content(message.get("content")),
+                }
+                if converted and converted[-1]["role"] == "user" and self._is_tool_result_message(converted[-1]):
+                    converted[-1]["content"].append(tool_result_block)
+                else:
+                    converted.append(
+                        {"role": "user", "content": [tool_result_block]}
+                    )
                 continue
             blocks: List[Dict[str, Any]] = []
-            # Thinking blocks must precede text/tool_use in assistant content
             for tb in message.get("_thinking_blocks") or []:
                 blocks.append(tb)
             content = self._coerce_content(message.get("content"))
@@ -324,6 +425,16 @@ class MultiProviderClient:
                 )
             converted.append({"role": role, "content": blocks or [{"type": "text", "text": ""}]})
         return "\n".join(system_parts).strip(), converted
+
+    @staticmethod
+    def _is_tool_result_message(message: Dict[str, Any]) -> bool:
+        content = message.get("content")
+        if not isinstance(content, list):
+            return False
+        return all(
+            isinstance(b, dict) and b.get("type") == "tool_result"
+            for b in content
+        )
 
     def _to_gemini_payload(self, *, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
         system_instruction, contents = self._to_gemini_messages(messages)

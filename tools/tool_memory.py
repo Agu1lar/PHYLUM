@@ -18,8 +18,9 @@ MEMORY_ACTIONS = (
     'world_upsert|world_get|world_query|world_delete|world_touch|world_prune|world_types|'
     'world_remember_share|world_remember_app|world_remember_alias|world_remember_selector|world_remember_path|'
     'world_find_share|world_find_app|world_find_alias|world_find_selector|world_find_path|'
+    'world_link|world_unlink|world_get_linked|world_cross_references|'
     'strategy_record_success|strategy_record_failure|strategy_find|strategy_best|strategy_reused|strategy_goal_types|'
-    'semantic_search_strategies|semantic_search_entities'
+    'semantic_search_strategies|semantic_search_entities|semantic_search_boosted'
 )
 
 
@@ -44,6 +45,12 @@ class MemoryInput(BaseModel):
     duration_ms: Optional[int] = None
     boost_confidence: Optional[float] = None
     limit: Optional[int] = None
+    task_context: Optional[str] = None
+    target_type: Optional[str] = None
+    target_key: Optional[str] = None
+    relation: Optional[str] = None
+    bidirectional: Optional[bool] = None
+    depth: Optional[int] = None
 
 
 class MemoryOutput(BaseModel):
@@ -80,6 +87,16 @@ class MemoryTool(BaseTool):
             raise ValueError('key is required for world_remember_* actions')
         if payload.action.startswith('world_find_') and not payload.query:
             raise ValueError('query is required for world_find_* actions')
+        if payload.action in ('world_link', 'world_unlink') and (
+            not payload.entity_type or not payload.key or not payload.target_type or not payload.target_key
+        ):
+            raise ValueError('entity_type, key, target_type and target_key are required for world_link/world_unlink')
+        if payload.action == 'world_get_linked' and (not payload.entity_type or not payload.key):
+            raise ValueError('entity_type and key are required for world_get_linked')
+        if payload.action == 'world_cross_references' and (not payload.entity_type or not payload.key):
+            raise ValueError('entity_type and key are required for world_cross_references')
+        if payload.action == 'semantic_search_boosted' and not payload.query:
+            raise ValueError('query is required for semantic_search_boosted')
         if payload.action == 'strategy_record_success' and (not payload.strategy_id or not payload.goal_type):
             raise ValueError('strategy_id and goal_type are required for strategy_record_success')
         if payload.action == 'strategy_record_failure' and not payload.goal_type:
@@ -162,6 +179,7 @@ class MemoryTool(BaseTool):
                 min_confidence=payload.min_confidence or 0.0,
                 tags=payload.tags,
                 app_context=payload.app_context,
+                task_context=payload.task_context,
             )
             return MemoryOutput(success=True, items=[e.to_dict() for e in entities], message='world_entities_queried')
         if payload.action == 'world_delete':
@@ -251,6 +269,39 @@ class MemoryTool(BaseTool):
                 return MemoryOutput(success=True, value=None, message='not_found')
             return MemoryOutput(success=True, value=entity.to_dict(), message='path_found')
 
+        # --- Cross-reference / entity linking ---
+        if payload.action == 'world_link':
+            linked = await self.world_model.link_entities(
+                payload.entity_type, payload.key,
+                payload.target_type, payload.target_key,
+                relation=payload.relation or "related",
+                bidirectional=payload.bidirectional if payload.bidirectional is not None else True,
+            )
+            return MemoryOutput(
+                success=linked,
+                message='entities_linked' if linked else 'link_failed_entity_not_found',
+            )
+        if payload.action == 'world_unlink':
+            await self.world_model.unlink_entities(
+                payload.entity_type, payload.key,
+                payload.target_type, payload.target_key,
+                bidirectional=payload.bidirectional if payload.bidirectional is not None else True,
+            )
+            return MemoryOutput(success=True, message='entities_unlinked')
+        if payload.action == 'world_get_linked':
+            links = await self.world_model.get_linked(
+                payload.entity_type, payload.key,
+                relation=payload.relation,
+                target_type=payload.target_type,
+            )
+            return MemoryOutput(success=True, items=links, message='linked_entities_found')
+        if payload.action == 'world_cross_references':
+            tree = await self.world_model.find_cross_references(
+                payload.entity_type, payload.key,
+                depth=payload.depth or 1,
+            )
+            return MemoryOutput(success=True, value=tree, message='cross_references_found')
+
         # --- Strategy Memory actions ---
         if payload.action == 'strategy_record_success':
             record = await self.strategy_memory.record_success(
@@ -308,7 +359,18 @@ class MemoryTool(BaseTool):
                 entity_type=payload.entity_type if payload.entity_type else None,
                 app_context=payload.app_context if payload.app_context else None,
                 limit=int(payload.limit or 10),
+                task_context=payload.task_context,
             )
             return MemoryOutput(success=True, items=results, message='semantic_entities_found')
+
+        if payload.action == 'semantic_search_boosted':
+            results = await self.world_model.semantic_search(
+                payload.query or '',
+                entity_type=payload.entity_type if payload.entity_type else None,
+                app_context=payload.app_context if payload.app_context else None,
+                limit=int(payload.limit or 10),
+                task_context=payload.task_context,
+            )
+            return MemoryOutput(success=True, items=results, message='boosted_search_complete')
 
         return MemoryOutput(success=False, message='unknown')

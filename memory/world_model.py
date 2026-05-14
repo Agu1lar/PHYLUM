@@ -40,11 +40,26 @@ ENTITY_TYPES = {
 }
 
 
+CONTEXT_BOOST_MAP: Dict[str, Dict[str, float]] = {
+    "office": {"document_alias": 0.25, "app_path": 0.15, "selector": 0.10},
+    "word": {"document_alias": 0.30, "app_path": 0.15, "selector": 0.10},
+    "excel": {"document_alias": 0.30, "app_path": 0.15, "selector": 0.10},
+    "outlook": {"document_alias": 0.15, "web_resource": 0.10, "app_path": 0.10},
+    "browser": {"web_resource": 0.25, "path_candidate": 0.10},
+    "filesystem": {"path_candidate": 0.25, "document_alias": 0.15, "share": 0.10},
+    "network": {"share": 0.25, "device": 0.15, "environment": 0.10},
+    "printer": {"device": 0.30, "share": 0.10, "app_path": 0.10},
+    "ui_automation": {"selector": 0.30, "app_path": 0.15},
+    "install": {"app_path": 0.20, "device": 0.15, "environment": 0.10},
+    "document": {"document_alias": 0.30, "path_candidate": 0.15},
+}
+
+
 class WorldEntity:
     __slots__ = (
         "entity_type", "key", "value", "confidence", "created_at",
         "updated_at", "expires_at", "source", "tags", "hit_count",
-        "last_used_at", "app_context",
+        "last_used_at", "app_context", "linked_entities",
     )
 
     def __init__(
@@ -62,6 +77,7 @@ class WorldEntity:
         hit_count: int = 0,
         last_used_at: Optional[str] = None,
         app_context: Optional[str] = None,
+        linked_entities: Optional[List[Dict[str, str]]] = None,
     ):
         now = datetime.utcnow().isoformat()
         self.entity_type = entity_type
@@ -76,6 +92,7 @@ class WorldEntity:
         self.hit_count = hit_count
         self.last_used_at = last_used_at
         self.app_context = app_context
+        self.linked_entities = linked_entities or []
 
     @staticmethod
     def _default_expiry(entity_type: str) -> str:
@@ -115,6 +132,7 @@ class WorldEntity:
             "hit_count": self.hit_count,
             "last_used_at": self.last_used_at,
             "app_context": self.app_context,
+            "linked_entities": self.linked_entities,
         }
 
     @classmethod
@@ -132,6 +150,7 @@ class WorldEntity:
             hit_count=data.get("hit_count", 0),
             last_used_at=data.get("last_used_at"),
             app_context=data.get("app_context"),
+            linked_entities=data.get("linked_entities", []),
         )
 
 
@@ -227,10 +246,15 @@ class WorldModel:
         app_context: Optional[str] = None,
         include_expired: bool = False,
         limit: int = 50,
+        task_context: Optional[str] = None,
     ) -> List[WorldEntity]:
         prefix = f"{self.KV_PREFIX}{entity_type}:"
         records = await self.persistence.list_kv(prefix)
         entities: List[WorldEntity] = []
+
+        boost = 0.0
+        if task_context:
+            boost = _get_context_boost(task_context, entity_type)
 
         for record in records:
             raw = record.get("value")
@@ -252,7 +276,9 @@ class WorldModel:
                     continue
             entities.append(entity)
 
-        entities.sort(key=lambda e: (-e.effective_confidence, -e.hit_count))
+        entities.sort(
+            key=lambda e: (-(e.effective_confidence + boost), -e.hit_count),
+        )
         return entities[:limit]
 
     async def delete(self, entity_type: str, key: str) -> bool:
@@ -327,17 +353,26 @@ class WorldModel:
         app_context: Optional[str] = None,
         limit: int = 10,
         min_score: float = 0.1,
+        task_context: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Semantic vector search across entities. Falls back to typed query if no index."""
+        """Semantic vector search across entities with optional contextual boosting.
+
+        When ``task_context`` is provided (e.g. "office", "printer", "browser"),
+        entity types relevant to that domain receive a score boost, so they float
+        to the top of the results even when competing with unrelated entities.
+        """
         if self._semantic_index is not None:
             try:
-                return await self._semantic_index.search_entities(
+                results = await self._semantic_index.search_entities(
                     query,
                     entity_type=entity_type,
                     app_context=app_context,
-                    limit=limit,
+                    limit=limit * 3 if task_context else limit,
                     min_score=min_score,
                 )
+                if task_context and results:
+                    results = _apply_contextual_boost(results, task_context)
+                return results[:limit]
             except Exception:
                 logger.debug("Semantic search failed, falling back to typed query", exc_info=True)
 
@@ -346,6 +381,7 @@ class WorldModel:
             query=query,
             app_context=app_context,
             limit=limit,
+            task_context=task_context,
         )
         return [e.to_dict() for e in entities]
 
@@ -447,3 +483,190 @@ class WorldModel:
                 "count_sample": len(entities),
             })
         return result
+
+    # --- Cross-reference / entity linking ---
+
+    async def link_entities(
+        self,
+        source_type: str,
+        source_key: str,
+        target_type: str,
+        target_key: str,
+        *,
+        relation: str = "related",
+        bidirectional: bool = True,
+    ) -> bool:
+        """Create a link between two entities.
+
+        Example: link the app_path for Excel to a selector for a spreadsheet::
+
+            await wm.link_entities("app_path", "excel", "selector", "excel_save_btn",
+                                   relation="has_selector")
+        """
+        source = await self.get(source_type, source_key, record_hit=False)
+        if source is None:
+            return False
+        target = await self.get(target_type, target_key, record_hit=False)
+        if target is None:
+            return False
+
+        link_entry = {"entity_type": target_type, "key": target_key, "relation": relation}
+        if not any(
+            l.get("entity_type") == target_type and l.get("key") == target_key
+            for l in source.linked_entities
+        ):
+            source.linked_entities.append(link_entry)
+            source.updated_at = datetime.utcnow().isoformat()
+            await self.persistence.save_kv(
+                self._storage_key(source_type, source_key), source.to_dict(),
+            )
+
+        if bidirectional:
+            reverse_entry = {"entity_type": source_type, "key": source_key, "relation": relation}
+            if not any(
+                l.get("entity_type") == source_type and l.get("key") == source_key
+                for l in target.linked_entities
+            ):
+                target.linked_entities.append(reverse_entry)
+                target.updated_at = datetime.utcnow().isoformat()
+                await self.persistence.save_kv(
+                    self._storage_key(target_type, target_key), target.to_dict(),
+                )
+
+        return True
+
+    async def unlink_entities(
+        self,
+        source_type: str,
+        source_key: str,
+        target_type: str,
+        target_key: str,
+        *,
+        bidirectional: bool = True,
+    ) -> bool:
+        """Remove a link between two entities."""
+        source = await self.get(source_type, source_key, record_hit=False)
+        if source is not None:
+            original_len = len(source.linked_entities)
+            source.linked_entities = [
+                l for l in source.linked_entities
+                if not (l.get("entity_type") == target_type and l.get("key") == target_key)
+            ]
+            if len(source.linked_entities) != original_len:
+                await self.persistence.save_kv(
+                    self._storage_key(source_type, source_key), source.to_dict(),
+                )
+
+        if bidirectional:
+            target = await self.get(target_type, target_key, record_hit=False)
+            if target is not None:
+                original_len = len(target.linked_entities)
+                target.linked_entities = [
+                    l for l in target.linked_entities
+                    if not (l.get("entity_type") == source_type and l.get("key") == source_key)
+                ]
+                if len(target.linked_entities) != original_len:
+                    await self.persistence.save_kv(
+                        self._storage_key(target_type, target_key), target.to_dict(),
+                    )
+
+        return True
+
+    async def get_linked(
+        self,
+        entity_type: str,
+        key: str,
+        *,
+        relation: Optional[str] = None,
+        target_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get all entities linked to a given entity, optionally filtered by relation or type."""
+        entity = await self.get(entity_type, key, record_hit=False)
+        if entity is None:
+            return []
+
+        results = []
+        for link in entity.linked_entities:
+            if relation and link.get("relation") != relation:
+                continue
+            if target_type and link.get("entity_type") != target_type:
+                continue
+            linked = await self.get(link["entity_type"], link["key"], record_hit=False)
+            if linked is not None:
+                entry = linked.to_dict()
+                entry["relation"] = link.get("relation", "related")
+                results.append(entry)
+
+        return results
+
+    async def find_cross_references(
+        self,
+        entity_type: str,
+        key: str,
+        *,
+        depth: int = 1,
+    ) -> Dict[str, Any]:
+        """Traverse links from an entity up to ``depth`` levels deep.
+
+        Returns a tree structure of the entity and its linked neighbors.
+        """
+        entity = await self.get(entity_type, key, record_hit=False)
+        if entity is None:
+            return {}
+
+        result = entity.to_dict()
+        if depth <= 0 or not entity.linked_entities:
+            return result
+
+        visited = {f"{entity_type}:{key}"}
+        linked_expanded = []
+        for link in entity.linked_entities:
+            link_id = f"{link['entity_type']}:{link['key']}"
+            if link_id in visited:
+                continue
+            visited.add(link_id)
+            if depth > 1:
+                child = await self.find_cross_references(
+                    link["entity_type"], link["key"], depth=depth - 1,
+                )
+                if child:
+                    child["relation"] = link.get("relation", "related")
+                    linked_expanded.append(child)
+            else:
+                linked = await self.get(link["entity_type"], link["key"], record_hit=False)
+                if linked:
+                    child = linked.to_dict()
+                    child["relation"] = link.get("relation", "related")
+                    linked_expanded.append(child)
+
+        result["linked_resolved"] = linked_expanded
+        return result
+
+
+# --- Contextual boosting helpers ---
+
+def _get_context_boost(task_context: str, entity_type: str) -> float:
+    """Look up the boost value for an entity type given a task context."""
+    ctx = task_context.lower().strip()
+    boosts = CONTEXT_BOOST_MAP.get(ctx, {})
+    return boosts.get(entity_type, 0.0)
+
+
+def _apply_contextual_boost(
+    results: List[Dict[str, Any]],
+    task_context: str,
+) -> List[Dict[str, Any]]:
+    """Re-rank semantic search results by applying contextual boost scores."""
+    boosted = []
+    for r in results:
+        entity_type = r.get("entity_type", "")
+        boost = _get_context_boost(task_context, entity_type)
+        base_score = r.get("semantic_score", 0.0)
+        boosted_score = base_score + boost
+        entry = dict(r)
+        entry["context_boost"] = round(boost, 4)
+        entry["boosted_score"] = round(boosted_score, 4)
+        boosted.append(entry)
+
+    boosted.sort(key=lambda x: (-x["boosted_score"], -x.get("confidence", 0)))
+    return boosted

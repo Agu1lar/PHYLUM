@@ -71,6 +71,7 @@ class EventType(str, Enum):
     AGENT_STEP = "agent_step"
     AGENT_THINKING = "agent_thinking"
     TOOL_CALL_PROPOSED = "tool_call_proposed"
+    AGENTIC_FALLBACK = "agentic_fallback"
 
     # --- Handoff ---
     USER_INPUT_REQUESTED = "user_input_requested"

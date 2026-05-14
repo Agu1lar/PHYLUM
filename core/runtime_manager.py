@@ -823,7 +823,14 @@ class RuntimeManager:
                     await self._run_manual_assist_pipeline(state, reason=reason)
             elif state["runtime_mode"] == "agentic":
                 state["_pipeline_graph"] = "agentic"
-                await self._run_agentic_pipeline(state)
+                try:
+                    await self._run_agentic_pipeline(state)
+                except RunPausedError:
+                    raise
+                except asyncio.CancelledError:
+                    raise
+                except Exception as agentic_exc:
+                    await self._fallback_to_local(state, agentic_exc)
             else:
                 state["_pipeline_graph"] = "local_heuristic"
                 await self._run_local_heuristic_pipeline(state)
@@ -834,6 +841,10 @@ class RuntimeManager:
         except Exception as exc:
             logger.exception("Run %s failed unexpectedly", request_id)
             if state.get("status") != "failed":
+                import traceback as _tb
+                tb_str = _tb.format_exc()
+                state["_traceback"] = tb_str
+                state["_exception_type"] = exc.__class__.__name__
                 await self._fail_run(state, str(exc))
         finally:
             self.run_tasks.pop(request_id, None)
@@ -996,6 +1007,76 @@ class RuntimeManager:
             current_node="reflection",
         )
 
+    async def _fallback_to_local(self, state: Dict[str, Any], agentic_exc: Exception) -> None:
+        """When the agentic pipeline fails (LLM API error, parsing error, etc.),
+        fall back to the local heuristic pipeline which doesn't need an LLM."""
+        import traceback as _tb
+        exc_name = agentic_exc.__class__.__name__
+        exc_msg = str(agentic_exc)
+        logger.warning(
+            "Agentic pipeline failed (%s: %s) for run %s — falling back to local heuristic",
+            exc_name, exc_msg, state.get("request_id"),
+        )
+        await self._emit(
+            "agentic_fallback",
+            {
+                "request_id": state["request_id"],
+                "reason": f"{exc_name}: {exc_msg}",
+                "fallback_to": "local_heuristic",
+            },
+            state=state,
+        )
+        state["_pipeline_graph"] = "local_heuristic_fallback"
+        state["_agentic_error"] = {
+            "type": exc_name,
+            "message": exc_msg,
+            "traceback": _tb.format_exc(),
+        }
+        state["status"] = "running"
+        state["error"] = None
+        already_completed = [
+            t for t in state.get("tasks", [])
+            if t.get("status") in {"completed", "partial"}
+        ]
+        if already_completed:
+            logger.info(
+                "Fallback: %d task(s) already completed by agentic pipeline, skipping re-planning",
+                len(already_completed),
+            )
+            pending = [
+                t for t in state.get("tasks", [])
+                if t.get("status") not in {"completed", "partial"}
+            ]
+            if not pending:
+                completed_summaries = [
+                    ((t.get("result") or {}).get("action_result") or {}).get("summary", t.get("title", ""))
+                    for t in already_completed
+                ]
+                summary = (
+                    f"O modelo de linguagem ficou indisponivel, mas as tarefas ja tinham sido executadas com sucesso.\n"
+                    + "\n".join(f"- {s}" for s in completed_summaries)
+                )
+                await self._complete_run(
+                    state,
+                    summary=summary,
+                    details={"execution_mode": "local_heuristic_fallback", "agentic_error": state["_agentic_error"]},
+                    current_node="reflection",
+                )
+                return
+        try:
+            await self._run_local_heuristic_pipeline(state)
+        except Exception as fallback_exc:
+            logger.exception(
+                "Fallback local heuristic also failed for run %s", state.get("request_id"),
+            )
+            state["_traceback"] = _tb.format_exc()
+            state["_exception_type"] = fallback_exc.__class__.__name__
+            combined_error = (
+                f"Agentic pipeline failed ({exc_name}: {exc_msg}). "
+                f"Fallback also failed ({fallback_exc.__class__.__name__}: {fallback_exc})."
+            )
+            await self._fail_run(state, combined_error)
+
     async def _run_agentic_pipeline(self, state: Dict[str, Any]) -> None:
         provider = state.get("provider")
         if not provider:
@@ -1070,7 +1151,16 @@ class RuntimeManager:
         next_steps: List[str] = []
         manual_option: Optional[str] = None
 
-        if "approval rejected" in message:
+        if "llm api" in message or "http" in message and any(code in message for code in ("429", "500", "502", "503", "529")):
+            summary = (
+                f"A API do modelo de linguagem ficou temporariamente indisponivel durante a execucao. "
+                f"Detalhe: {raw_error[:200]}"
+            )
+            next_steps = [
+                "Tente novamente em alguns segundos — erros 429/5xx costumam ser temporarios.",
+                "Se o erro persistir, verifique o saldo e os limites da sua conta no provedor.",
+            ]
+        elif "approval rejected" in message:
             summary = (
                 "Nao continuei porque a acao que precisava da sua aprovacao foi rejeitada. "
                 "Se quiser tentar de novo, inicie a tarefa novamente e aprove essa etapa."
@@ -1124,10 +1214,47 @@ class RuntimeManager:
                 "Verifique se o aplicativo abre manualmente nesta sessao do Windows.",
                 "Se ele abrir com janela inicial, tente novamente para eu continuar com a automacao.",
             ]
+        elif tool == "shell":
+            cmd_preview = (params.get("command") or "")[:120]
+            stderr = details.get("stderr") or ""
+            rc = details.get("returncode")
+            if "non-zero-exit" in message or (rc is not None and rc != 0):
+                summary = (
+                    f"O comando '{cmd_preview}' terminou com erro (codigo {rc})."
+                    + (f" Detalhe: {stderr[:200]}" if stderr else "")
+                )
+            elif "not recognized" in message or "nao e reconhecido" in message or "commandnotfound" in message:
+                summary = (
+                    f"O comando '{cmd_preview}' nao foi reconhecido neste sistema. "
+                    "O modulo ou cmdlet necessario pode nao estar instalado nesta edicao do Windows."
+                )
+            else:
+                summary = (
+                    f"Nao consegui concluir o comando '{cmd_preview}'. "
+                    f"Erro tecnico: {raw_error[:200]}"
+                )
+            next_steps = [
+                "Tente novamente com mais contexto ou com um comando alternativo.",
+                "Se o comando exigir privilegios de Administrador, reinicie o agente como Admin.",
+            ]
+        elif tool == "driver_manager":
+            target = params.get("printer_name") or params.get("query") or params.get("device_id") or ""
+            summary = (
+                f"Nao consegui concluir a operacao de driver/impressora"
+                + (f" para '{target}'" if target else "")
+                + f". Erro tecnico: {raw_error[:200]}"
+            )
+            next_steps = [
+                "Verifique se o servico 'Spooler de Impressao' esta ativo (Get-Service Spooler).",
+                "Se o erro persistir, tente com o nome ou IP exato do dispositivo.",
+            ]
+            manual_option = (
+                "Se preferir configurar manualmente, abra Configuracoes > Bluetooth e dispositivos > Impressoras e scanners."
+            )
         else:
             summary = (
                 f"Nao consegui concluir '{task_title}'. "
-                "A tarefa encontrou um problema interno antes de terminar."
+                f"Erro tecnico: {raw_error[:200]}"
             )
             next_steps = ["Se quiser tentar de novo, reenvie a instrucao com mais detalhes sobre o objetivo ou o alvo exato."]
 
@@ -1156,17 +1283,24 @@ class RuntimeManager:
         final_reflection = self._user_facing_failure_reflection(state, error)
         state["outputs"]["final_reflection"] = final_reflection
         await self._set_run_status(state, "failed")
-        await self._emit(
-            "run_failed",
-            {
-                "request_id": state["request_id"],
-                "status": state["status"],
-                "error": error,
-                "user_message": final_reflection["summary"],
-                "reflection": final_reflection,
-            },
-            state=state,
-        )
+        diagnostics = {
+            "request_id": state["request_id"],
+            "status": state["status"],
+            "error": error,
+            "user_message": final_reflection["summary"],
+            "reflection": final_reflection,
+        }
+        if state.get("_traceback"):
+            diagnostics["traceback"] = state["_traceback"]
+            diagnostics["exception_type"] = state.get("_exception_type", "Unknown")
+            logger.error(
+                "Run %s failed — %s: %s\n%s",
+                state["request_id"],
+                state.get("_exception_type", "Exception"),
+                error,
+                state["_traceback"],
+            )
+        await self._emit("run_failed", diagnostics, state=state)
         await self._finalize_goal_for_run(state, completed=False, error=error)
 
     async def _finalize_goal_for_run(self, state: Dict[str, Any], *, completed: bool, summary: Optional[str] = None, error: Optional[str] = None) -> None:

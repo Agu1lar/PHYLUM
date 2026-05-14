@@ -8,20 +8,29 @@ import json
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+import logging
+
 from action_executor import RunPausedError
 from canonical_tools import agentic_tool_definitions, to_openai_tool_call
 from context_window import ContextWindowManager
-from multi_provider_client import MultiProviderClient
+from execution_economics import CostTracker
+from multi_provider_client import LLMApiError, MultiProviderClient
 from nodes_reflection import ReflectionNode
 from nodes_safety import SafetyNode
 from nodes_tool_router import ToolRouterNode
 from prompt_cache import PromptCache
+
+logger = logging.getLogger(__name__)
 
 
 TaskFactory = Callable[[str, Dict[str, Any], int], Dict[str, Any]]
 EmitFn = Callable[[str, Dict[str, Any]], Awaitable[None]]
 TaskExecuteFn = Callable[[Dict[str, Any], Dict[str, Any]], Awaitable[Dict[str, Any]]]
 CheckpointFn = Callable[[Dict[str, Any]], Awaitable[None]]
+
+
+_DEFAULT_RUN_BUDGET_USD = 0.25
+_DEFAULT_RUN_BUDGET_TOKENS = 80_000
 
 
 class AgenticLoop:
@@ -32,13 +41,17 @@ class AgenticLoop:
         safety: SafetyNode,
         tool_router: ToolRouterNode,
         reflection: ReflectionNode,
-        max_steps: int = 16,
+        max_steps: int = 10,
+        budget_usd: float = _DEFAULT_RUN_BUDGET_USD,
+        budget_tokens: int = _DEFAULT_RUN_BUDGET_TOKENS,
     ):
         self.client = client
         self.safety = safety
         self.tool_router = tool_router
         self.reflection = reflection
         self.max_steps = max_steps
+        self.budget_usd = budget_usd
+        self.budget_tokens = budget_tokens
         self.prompt_cache = PromptCache()
         self.context_window = ContextWindowManager()
 
@@ -68,9 +81,33 @@ class AgenticLoop:
             ]
         start_step = int((session or {}).get("step") or 0)
 
+        cost_tracker = CostTracker(
+            run_id=state.get("request_id", ""),
+            model=provider_config.get("model", ""),
+            budget_usd=self.budget_usd,
+            budget_tokens=self.budget_tokens,
+        )
+
         for step in range(start_step + 1, start_step + self.max_steps + 1):
             if cancel_event.is_set():
                 raise asyncio.CancelledError()
+
+            if cost_tracker.over_budget:
+                logger.warning(
+                    "Run %s hit budget limit (USD %.4f / %d tokens) at step %d",
+                    state.get("request_id"), cost_tracker.total_cost_usd,
+                    cost_tracker.total_tokens, step,
+                )
+                partial_text = self._salvage_budget_stop(state, cost_tracker)
+                return {
+                    "status": "completed",
+                    "final_text": partial_text,
+                    "steps": step - 1,
+                    "session": {"messages": messages, "step": step - 1},
+                    "cost": cost_tracker.summary().to_dict(),
+                    "budget_exceeded": True,
+                }
+
             if checkpoint is not None:
                 await checkpoint({"step": step, "paused_reason": None})
             await emit(
@@ -82,14 +119,43 @@ class AgenticLoop:
                 },
             )
             messages_for_llm = self.context_window.compress_if_needed(messages)
-            turn = await self.client.complete(
-                provider=provider_id,
-                api_key=provider_config["api_key"],
-                model=provider_config["model"],
-                messages=messages_for_llm,
-                tools=tools_for_provider,
-                base_url=provider_config.get("base_url"),
-            )
+            try:
+                turn = await self.client.complete(
+                    provider=provider_id,
+                    api_key=provider_config["api_key"],
+                    model=provider_config["model"],
+                    messages=messages_for_llm,
+                    tools=tools_for_provider,
+                    base_url=provider_config.get("base_url"),
+                )
+            except LLMApiError as llm_err:
+                logger.error("LLM API failed at step %d: %s", step, llm_err)
+                partial_text = self._salvage_partial_response(state, step, llm_err)
+                return {
+                    "status": "completed",
+                    "final_text": partial_text,
+                    "steps": step,
+                    "session": {"messages": messages, "step": step},
+                    "cost": cost_tracker.summary().to_dict(),
+                    "llm_error": {
+                        "provider": llm_err.provider,
+                        "model": llm_err.model,
+                        "status_code": llm_err.status_code,
+                        "message": str(llm_err),
+                    },
+                }
+
+            if turn.usage:
+                cost_tracker.record_llm_usage(
+                    prompt_tokens=turn.usage.get("prompt_tokens", 0),
+                    completion_tokens=turn.usage.get("completion_tokens", 0),
+                    cache_creation_tokens=turn.usage.get("cache_creation_input_tokens", 0),
+                    cache_read_tokens=turn.usage.get("cache_read_input_tokens", 0),
+                )
+                logger.debug(
+                    "Step %d cost: USD %.4f cumulative, %d tokens total",
+                    step, cost_tracker.total_cost_usd, cost_tracker.total_tokens,
+                )
 
             if turn.thinking:
                 await emit(
@@ -192,7 +258,7 @@ class AgenticLoop:
                             {
                                 "role": "tool",
                                 "tool_call_id": tool_call.id,
-                                "content": json.dumps(subagent_results[tool_call.id], default=str),
+                                "content": self._compact_tool_result(subagent_results[tool_call.id]),
                             }
                         )
                         if checkpoint is not None:
@@ -292,7 +358,7 @@ class AgenticLoop:
                         {
                             "role": "tool",
                             "tool_call_id": tool_call.id,
-                            "content": json.dumps(task_result, default=str),
+                            "content": self._compact_tool_result(task_result),
                         }
                     )
                     if checkpoint is not None:
@@ -322,9 +388,15 @@ class AgenticLoop:
                     "final_text": turn.content,
                     "steps": step,
                     "session": {"messages": messages, "step": step},
+                    "cost": cost_tracker.summary().to_dict(),
                 }
                 if turn.thinking:
                     result["thinking"] = turn.thinking
+                logger.info(
+                    "Run %s completed in %d steps — USD %.4f, %d tokens",
+                    state.get("request_id"), step,
+                    cost_tracker.total_cost_usd, cost_tracker.total_tokens,
+                )
                 return result
             raise RuntimeError("Agent returned neither text nor tool call")
 
@@ -642,7 +714,7 @@ class AgenticLoop:
                         {
                             "role": "tool",
                             "tool_call_id": tc.id,
-                            "content": json.dumps(results_map.get(tc.id, {"status": "failed", "error": "execution skipped"}), default=str),
+                            "content": self._compact_tool_result(results_map.get(tc.id, {"status": "failed", "error": "execution skipped"})),
                         }
                     )
                 tool_calls_used += len(turn.tool_calls)
@@ -672,107 +744,25 @@ class AgenticLoop:
 
     def _system_prompt(self) -> str:
         return (
-            "You are the agentic runtime for a desktop automation assistant on Windows. "
-            "You are a fully autonomous agent that ACTS first and reports results after. "
-            "\n\n"
-            "== RESPONSE FORMAT ==\n"
-            "Write responses as a competent colleague would speak — clean, natural, direct. "
-            "NEVER use excessive emojis. NEVER use markdown tables for simple lists. NEVER use headers (##) excessively. "
-            "Use plain text with occasional bold for emphasis. Keep responses concise and action-oriented. "
-            "Bad example: '## 🔍 Diagnóstico\\n| # | Nome | Driver |\\n|---|------|--------|' "
-            "Good example: 'Encontrei 3 impressoras instaladas: Microsoft Print to PDF, OneNote Desktop e RustDesk Printer. Todas são virtuais.' "
-            "When presenting results, summarize the key findings in 2-3 sentences. Add details only if the user asks. "
-            "\n\n"
-            "== PROACTIVE AUTONOMY ==\n"
-            "You MUST think associatively like a human assistant. When you complete a step, ask yourself: "
-            "'What would the user logically want me to do NEXT based on what I just found?' "
-            "Then DO IT — do not stop to ask permission for the obvious next step. "
-            "\n"
-            "Examples of associative thinking:\n"
-            "- User asks 'install drivers from the network' -> you discover only virtual printers exist -> "
-            "  NEXT: scan the network for physical printers/devices, check for shared printers, try to discover and configure them. "
-            "  Do NOT stop to list virtual printers and ask 'which printer do you want?'. "
-            "- User asks 'get my last 3 emails in a Word doc' -> you read the emails -> "
-            "  NEXT: immediately create the Word document with the content. Do not ask where to save it, just pick a sensible default. "
-            "- User asks 'organize my Downloads folder' -> you list the files -> "
-            "  NEXT: immediately create folders by type and move files. Do not ask 'how should I organize?'. "
-            "- User asks 'check if the VPN is working' -> you find it's disconnected -> "
-            "  NEXT: try to reconnect it. Do not just report 'VPN is disconnected'. "
-            "\n"
-            "The rule: if the next step is OBVIOUS from context, DO IT. Only use request_user_input when: "
-            "(1) there are multiple equally valid choices that depend on user preference, OR "
-            "(2) you need information that cannot be discovered with the available tools (like a password or specific model name that doesn't appear anywhere in the system). "
-            "Exhaust ALL discovery options before asking the user anything. "
-            "\n\n"
-            "== AVAILABLE TOOLS ==\n"
-            "shell: Windows PowerShell and cmd commands. Do not assume shell is unavailable unless a command actually failed.\n"
-            "desktop: list Explorer windows, mapped drives, open apps/files/folders, focus/close/kill windows and processes.\n"
-            "windows_ui: inspect windows, find/list controls, invoke controls, type text, select items, send hotkeys, read UI state (via pywinauto, no pixel automation).\n"
-            "share_discovery: enumerate mapped drives, inspect share roots, capture Explorer network context.\n"
-            "document_intelligence: inspect documents, extract text, search content, list recent documents.\n"
-            "office: Word, Excel, Outlook via COM — ALL headlessly in background. "
-            "Actions: open_document, export_pdf, save_as_document, list_workbook_sheets, word_find_text, word_create_document, "
-            "excel_read_range, outlook_read_latest, outlook_search_messages, draft_email_with_attachment, reveal_active_document_path.\n"
-            "sandbox: execute dynamic Python or PowerShell scripts in a controlled sandbox. Use for custom data analysis, ad-hoc automation, or when no existing tool covers the task. "
-            "Pass input_files to provide data.\n"
-            "artifact: load, read, transform and analyze files internally (TXT, CSV, JSON, PDF, DOCX, XLSX, MSG) without opening desktop apps.\n"
-            "dynamic_tool: create, persist, and execute reusable micro-tools (Python functions with a run(params) entry point).\n"
-            "subagent: for complex discovery with independent branches, spawn isolated sub-agents in parallel, each with a specific objective and budget. "
-            "Use this when branches like network discovery, driver inventory, and web research can run concurrently; merge their findings before deciding the next action.\n"
-            "\n\n"
-            "== WORLD MODEL & STRATEGY MEMORY ==\n"
-            "Entity types: share, app_path, document_alias, selector, path_candidate, device, web_resource, user_preference, environment. "
-            "Before discovering from scratch, check if known: memory.world_find_share/app/alias/selector/path. "
-            "After discovering, persist it: memory.world_remember_share/app/alias/selector/path. "
-            "On successful reuse: memory.world_touch with boost_confidence. "
-            "Confidence decays 0.05/day — stale knowledge is naturally deprioritized. "
-            "For unfamiliar technical procedures, first query memory.world_query or memory.semantic_search_entities for web_resource. "
-            "If there is no useful cached answer, use web.search_web as an internal learning tool, then fetch/read the strongest sources as needed and apply the learned procedure. "
-            "Prefer official documentation, Microsoft Learn/docs.microsoft.com, StackOverflow/SuperUser/ServerFault, and vendor docs over blogs or SEO pages. "
-            "Treat web results as observations for your own reasoning, not just as material to echo to the user. "
-            "The web tool caches search results as web_resource entities so future similar tasks should reuse memory before re-searching. "
-            "For strategies: check memory.strategy_best before complex tasks. Record success/failure after. "
-            "Semantic search available: memory.semantic_search_strategies/entities for similarity-based lookup. "
-            "\n\n"
-            "== EXECUTION STRATEGY ==\n"
-            "1. INTERNAL vs DESKTOP: Prefer internal/headless processing. "
-            "office.outlook_read_latest reads emails without Outlook open. "
-            "office.word_create_document creates docs without Word open. "
-            "artifact.load processes files without opening apps. "
-            "ONLY use desktop/windows_ui tools when the user needs to SEE or INTERACT visually. "
-            "NEVER ask the user to open any application.\n"
-            "2. COMPLEX TASKS: Prefer built-in office tool over sandbox scripts for Office operations. "
-            "For custom processing, write sandbox scripts. Include error handling.\n"
-            "3. TOOL GAPS: Check dynamic_tool.list first. If nothing exists, write sandbox scripts. "
-            "For recurring needs, create dynamic tools.\n"
-            "4. FAILURE RECOVERY: When a tool fails, switch approach — do NOT just retry or give up. "
-            "Office COM fails -> sandbox scripts (openpyxl, python-docx). "
-            "Browser fails -> web tool or sandbox urllib. "
-            "Filesystem fails -> sandbox os/shutil. "
-            "Always prefer an alternative script over asking the user.\n"
-            "\n\n"
-            "== PARALLEL SUB-AGENTS ==\n"
-            "For complex tasks with independent discovery branches, use subagent.run_parallel_branches. "
-            "Give each branch a narrow objective, context, success criteria, and explicit budget. "
-            "Sub-agents have isolated context and return merged results to you; use those observations to choose and execute the final plan. "
-            "Do not spawn sub-agents for simple linear tasks or branches that depend on each other's outputs. "
-            "\n\n"
-            "== DISCOVERY-FIRST APPROACH ==\n"
-            "When the target is not fully known, discover it by inspecting the system: "
-            "Explorer windows, mapped drives, UNC shares, network devices, installed software, web sources. "
-            "Translate imprecise names into likely Windows paths/commands and test hypotheses. "
-            "Use Get-ChildItem, Get-PSDrive, net use, net view, ping, and other shell commands for discovery. "
-            "If a file might be on a network share, use desktop.list_explorer_windows first. "
-            "Always verify actions with a follow-up check (list_windows, list_processes, filesystem.stat). "
-            "\n\n"
-            "== GRAPH-BASED RECOVERY ==\n"
-            "The runtime uses a state graph. Recovery determines the exact node to return to: "
-            "retry->executor, replan->planner, verify->reflection, ask_user->handoff, script->script_recovery. "
-            "\n\n"
-            "Never ask for or reveal API keys or secrets. "
-            "Call tools with well-formed, complete arguments — especially 'content' and 'code' fields which must contain the full text. "
-            "Treat every tool result as an observation. Replan on failure. "
-            "When the goal is achieved, respond concisely with what was done and where results are."
+            "You are PHYLUM, an autonomous Windows desktop agent. ACT first, report after.\n\n"
+            "RESPONSE: Clean, direct, no emojis/tables/headers. Summarize in 2-3 sentences.\n\n"
+            "AUTONOMY: After each step, do the obvious next step. Only ask the user when "
+            "choices depend on preference or info is undiscoverable. Exhaust discovery first.\n\n"
+            "TOOLS: shell (PowerShell/cmd), desktop (windows/apps/processes), windows_ui (UI controls via pywinauto), "
+            "office (Word/Excel/Outlook headless COM), sandbox (Python/PS scripts), artifact (file analysis), "
+            "share_discovery (mapped drives/UNC), document_intelligence (doc extract/search), "
+            "web (search/fetch), memory (world model/strategy), driver_manager (printers/devices/drivers), "
+            "subagent (parallel branches with budget).\n\n"
+            "MEMORY: Check memory before discovering. Persist findings. Confidence decays 0.05/day. "
+            "Check strategy_best before complex tasks. Record outcomes after.\n\n"
+            "STRATEGY: Prefer headless/internal over desktop UI. On failure, switch approach "
+            "(COM fails->openpyxl; browser fails->web tool; fs fails->sandbox). "
+            "Never retry blindly. Discover targets via shell, Explorer, net commands. "
+            "Verify actions with follow-up checks.\n\n"
+            "BUDGET: Minimize tool calls. Combine related queries into one command. "
+            "Pipe PowerShell output to ConvertTo-Json for structured data. "
+            "Avoid Format-Table (wastes tokens); prefer Select-Object | ConvertTo-Json.\n\n"
+            "Never reveal API keys. Use complete tool arguments. Replan on failure."
         )
 
     @staticmethod
@@ -783,19 +773,19 @@ class AgenticLoop:
     ) -> Dict[str, Any]:
         base = dict(defaults or {
             "max_steps": 3,
-            "timeout_seconds": 90,
-            "max_tool_calls": 8,
-            "max_context_chars": 24000,
-            "max_estimated_tokens": 6000,
-            "max_cost_usd": 0.0,
-            "estimated_usd_per_1k_tokens": 0.0,
+            "timeout_seconds": 60,
+            "max_tool_calls": 4,
+            "max_context_chars": 12000,
+            "max_estimated_tokens": 3000,
+            "max_cost_usd": 0.05,
+            "estimated_usd_per_1k_tokens": 0.003,
         })
         limits = {
-            "max_steps": (1, 8),
-            "timeout_seconds": (5, 300),
-            "max_tool_calls": (0, 20),
-            "max_context_chars": (1000, 120000),
-            "max_estimated_tokens": (250, 30000),
+            "max_steps": (1, 5),
+            "timeout_seconds": (5, 120),
+            "max_tool_calls": (1, 8),
+            "max_context_chars": (1000, 24000),
+            "max_estimated_tokens": (250, 6000),
         }
         for key, (minimum, maximum) in limits.items():
             raw = budget.get(key, base[key]) if isinstance(budget, dict) else base[key]
@@ -1013,6 +1003,128 @@ class AgenticLoop:
             "options": options,
             "response": None,
         }
+
+    @staticmethod
+    def _salvage_partial_response(
+        state: Dict[str, Any], step: int, llm_err: LLMApiError,
+    ) -> str:
+        """Build a user-facing message from whatever tool results were collected
+        before the LLM API failed. This prevents losing work done in earlier steps."""
+        completed_tasks = [
+            t for t in state.get("tasks", [])
+            if t.get("status") in {"completed", "partial"}
+        ]
+        if not completed_tasks:
+            return (
+                "A conexao com o modelo de linguagem falhou antes de iniciar. "
+                "Tente novamente em alguns segundos."
+            )
+        parts = [
+            f"Executei {len(completed_tasks)} etapa(s), mas a conexao com o modelo caiu "
+            f"antes da analise final. Resumo dos resultados:"
+        ]
+        for t in completed_tasks:
+            ar = ((t.get("result") or {}).get("action_result") or {})
+            title = t.get("title", "")
+            data = ar.get("data") or {}
+            stdout = (data.get("stdout") or "").strip()
+            clean = AgenticLoop._sanitize_output(stdout, max_len=150)
+            if clean:
+                parts.append(f"- {title}: {clean}")
+            else:
+                parts.append(f"- {title}: (sem saida)")
+        parts.append("\nTente novamente para eu analisar e continuar.")
+        return "\n".join(parts)
+
+    @staticmethod
+    def _salvage_budget_stop(
+        state: Dict[str, Any], cost_tracker: CostTracker,
+    ) -> str:
+        """Build a user-facing message when the run is stopped due to budget limits."""
+        completed_tasks = [
+            t for t in state.get("tasks", [])
+            if t.get("status") in {"completed", "partial"}
+        ]
+        parts = [
+            f"Parei a execucao para proteger seu orcamento "
+            f"(USD {cost_tracker.total_cost_usd:.4f} / {cost_tracker.total_tokens} tokens)."
+        ]
+        if completed_tasks:
+            parts.append(f"Completei {len(completed_tasks)} etapa(s):")
+            for t in completed_tasks:
+                ar = ((t.get("result") or {}).get("action_result") or {})
+                title = t.get("title", "")
+                summary = ar.get("summary", "")
+                parts.append(f"- {title}: {summary[:120] if summary else '(ok)'}")
+        parts.append(
+            "\nPara continuar, reenvie a instrucao. "
+            "Considere simplificar a tarefa para reduzir o custo."
+        )
+        return "\n".join(parts)
+
+    _MAX_TOOL_RESULT_CHARS = 3000
+
+    def _compact_tool_result(self, result: Dict[str, Any]) -> str:
+        """Serialize a tool result for the LLM, stripping binary data and
+        capping total size to avoid token waste."""
+        compact = dict(result)
+        ar = compact.get("action_result")
+        if isinstance(ar, dict):
+            ar = dict(ar)
+            compact["action_result"] = ar
+            data = ar.get("data")
+            if isinstance(data, dict):
+                data = dict(data)
+                ar["data"] = data
+                for field in ("stdout", "stderr"):
+                    raw = data.get(field)
+                    if isinstance(raw, str) and raw:
+                        data[field] = self._sanitize_output(raw, max_len=1500)
+            ar.pop("diagnostics", None)
+        compact.pop("diagnostics", None)
+        tr = compact.get("tool_result")
+        if isinstance(tr, dict):
+            tr = dict(tr)
+            compact["tool_result"] = tr
+            tr.pop("raw", None)
+            structured = tr.get("structured")
+            if isinstance(structured, dict):
+                structured = dict(structured)
+                tr["structured"] = structured
+                structured.pop("raw", None)
+                res = structured.get("result")
+                if isinstance(res, dict):
+                    res = dict(res)
+                    structured["result"] = res
+                    for field in ("stdout", "stderr"):
+                        raw = res.get(field)
+                        if isinstance(raw, str) and raw:
+                            res[field] = self._sanitize_output(raw, max_len=1500)
+        serialized = json.dumps(compact, default=str, ensure_ascii=False)
+        if len(serialized) > self._MAX_TOOL_RESULT_CHARS:
+            compact_min = {
+                "status": (ar or compact).get("status", "unknown"),
+                "summary": (ar or compact).get("summary", ""),
+            }
+            if isinstance(ar, dict) and ar.get("data"):
+                compact_min["data"] = ar["data"]
+            serialized = json.dumps(compact_min, default=str, ensure_ascii=False)
+            if len(serialized) > self._MAX_TOOL_RESULT_CHARS:
+                serialized = serialized[:self._MAX_TOOL_RESULT_CHARS - 20] + '..."}'
+        return serialized
+
+    @staticmethod
+    def _sanitize_output(text: str, *, max_len: int = 150) -> str:
+        """Remove binary garbage, collapse whitespace, truncate."""
+        if not text:
+            return ""
+        printable_ratio = sum(1 for c in text[:200] if c.isprintable() or c in "\n\t") / max(len(text[:200]), 1)
+        if printable_ratio < 0.7:
+            return "(dados binarios)"
+        clean = " ".join(text.split())
+        if len(clean) <= max_len:
+            return clean
+        return clean[:max_len] + "..."
 
     def _truncate(self, text: str, *, limit: int = 160) -> str:
         if len(text) <= limit:

@@ -116,10 +116,14 @@ class ActionExecutor:
                     task=task,
                     cancel_event=self.runtime._cancel_event_for(state["request_id"]),
                 )
-                goal_verification = await self.runtime._verify_task_goal_async(task, result)
+                try:
+                    goal_verification = await self.runtime._verify_task_goal_async(task, result)
+                except Exception as gv_exc:
+                    logger.warning("Goal verification failed for task %s: %s", task.get("id"), gv_exc)
+                    goal_verification = {"satisfied": None, "confidence": 0, "rationale": f"verification error: {gv_exc}"}
                 action_result = result.get("action_result") or {}
                 action_result["goal"] = goal_verification
-                if action_result.get("status") == "succeeded" and not goal_verification.get("satisfied", False):
+                if action_result.get("status") == "succeeded" and goal_verification.get("satisfied") is False:
                     action_result["status"] = "partial"
                     action_result["summary"] = (
                         f"{action_result.get('summary', '')} "
@@ -128,15 +132,19 @@ class ActionExecutor:
                     result["action_result"] = action_result
                 state["outputs"][task["id"]] = result
                 task["result"] = result
-                reflection_result = await self.runtime.reflection.execute(
-                    {
-                        "inputs": state["inputs"],
-                        "current_task": task,
-                        "current_task_result": result,
-                        "current_task_error": None,
-                    }
-                )
-                task["reflection"] = reflection_result["reflection"]
+                try:
+                    reflection_result = await self.runtime.reflection.execute(
+                        {
+                            "inputs": state["inputs"],
+                            "current_task": task,
+                            "current_task_result": result,
+                            "current_task_error": None,
+                        }
+                    )
+                    task["reflection"] = reflection_result["reflection"]
+                except Exception as ref_exc:
+                    logger.warning("Reflection failed for task %s: %s", task.get("id"), ref_exc)
+                    task["reflection"] = {"verdict": "unknown", "error": str(ref_exc)}
                 action_status = action_result.get("status", "failed")
 
                 if self._is_agentic_task(state, task):

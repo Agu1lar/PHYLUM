@@ -34,9 +34,9 @@ class AgenticDiscoveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("shell", prompt)
         self.assertIn("PowerShell", prompt)
-        self.assertIn("desktop.list_explorer_windows", prompt)
-        self.assertIn("Get-PSDrive", prompt)
-        self.assertIn("open apps", prompt)
+        self.assertIn("desktop", prompt)
+        self.assertIn("discover", prompt.lower())
+        self.assertIn("ConvertTo-Json", prompt)
 
     async def test_planner_routes_open_word_to_open_app(self):
         plan, validation = await PlannerAgent().parse("open word")

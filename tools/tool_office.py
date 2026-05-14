@@ -12,6 +12,12 @@ from action_models import ActionEffects, ActionIssue, ActionResult
 from office_agent import OfficeAgent, OfficeComUnavailable
 from tool_base import BaseTool
 
+try:
+    from hung_process_reaper import TargetContext, resolve_office_process_name
+except ImportError:
+    TargetContext = None
+    resolve_office_process_name = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +49,7 @@ class OfficeTool(BaseTool):
     def __init__(self, *, default_timeout: int = 120, default_retries: int = 1):
         super().__init__(default_timeout=default_timeout, default_retries=default_retries)
         self.agent = OfficeAgent()
+        self._reap_on_timeout = True
 
     async def validate(self, payload: OfficeInput) -> None:
         if payload.action in {"open_document", "export_pdf", "save_as_document", "list_workbook_sheets"} and not payload.path:
@@ -60,7 +67,18 @@ class OfficeTool(BaseTool):
         if payload.action == "word_create_document" and (not payload.output_path or not payload.content):
             raise ValueError("word_create_document requires output_path and content")
 
+    def _set_target_ctx(self, payload: OfficeInput) -> None:
+        if TargetContext is not None and resolve_office_process_name is not None:
+            pname = resolve_office_process_name(payload.action, payload.path)
+            self._target_context = TargetContext(
+                process_name=pname,
+                title=payload.path or "",
+                tool_name="office",
+                action=payload.action,
+            )
+
     async def _run(self, payload: OfficeInput) -> ActionResult:
+        self._set_target_ctx(payload)
         target = {
             key: value
             for key, value in {

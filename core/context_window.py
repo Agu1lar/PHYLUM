@@ -20,9 +20,9 @@ class ContextWindowManager:
     def __init__(
         self,
         *,
-        max_context_tokens: int = 100_000,
-        reserve_for_response: int = 8_000,
-        recency_window: int = 4,
+        max_context_tokens: int = 40_000,
+        reserve_for_response: int = 4_000,
+        recency_window: int = 3,
     ):
         self.max_context_tokens = max_context_tokens
         self.reserve_for_response = reserve_for_response

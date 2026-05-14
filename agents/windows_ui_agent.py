@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import psutil
 
+from ui_lock import get_ui_lock
 from windows_ui_models import WindowsUiElement, WindowsUiSelector
 
 logger = logging.getLogger(__name__)
@@ -712,7 +713,11 @@ class WindowsUiAgent:
             )
             return {"element": element.dict(), "method": used_method, "fallback_errors": errors}
 
-        return await asyncio.to_thread(_run)
+        ui_lock = get_ui_lock()
+        async with ui_lock.acquire_operation("invoke_element") as rec:
+            result = await asyncio.to_thread(_run)
+            result["interference"] = rec.interference.to_dict() if rec.interference and rec.interference.detected else None
+            return result
 
     async def set_text(self, *, text: str, hwnd: Optional[int] = None, title: Optional[str] = None, process_name: Optional[str] = None, selector: Optional[Dict[str, Any]] = None, element_id: Optional[str] = None) -> Dict[str, Any]:
         def _run() -> Dict[str, Any]:
@@ -745,7 +750,9 @@ class WindowsUiAgent:
             )
             return {"element": element.dict(), "text": text}
 
-        return await asyncio.to_thread(_run)
+        ui_lock = get_ui_lock()
+        async with ui_lock.acquire_operation("set_text"):
+            return await asyncio.to_thread(_run)
 
     async def select_item(self, *, item_text: str, hwnd: Optional[int] = None, title: Optional[str] = None, process_name: Optional[str] = None, selector: Optional[Dict[str, Any]] = None, element_id: Optional[str] = None) -> Dict[str, Any]:
         def _run() -> Dict[str, Any]:
@@ -777,7 +784,9 @@ class WindowsUiAgent:
             )
             return {"element": element.dict(), "item_text": item_text}
 
-        return await asyncio.to_thread(_run)
+        ui_lock = get_ui_lock()
+        async with ui_lock.acquire_operation("select_item"):
+            return await asyncio.to_thread(_run)
 
     async def send_hotkey(self, hotkey: str) -> Dict[str, Any]:
         def _run() -> Dict[str, Any]:
@@ -787,7 +796,9 @@ class WindowsUiAgent:
             send_keys(hotkey)
             return {"hotkey": hotkey}
 
-        return await asyncio.to_thread(_run)
+        ui_lock = get_ui_lock()
+        async with ui_lock.acquire_operation("send_hotkey"):
+            return await asyncio.to_thread(_run)
 
     async def scroll(self, *, direction: Optional[str] = None, amount: int = 1, hwnd: Optional[int] = None, title: Optional[str] = None, process_name: Optional[str] = None, selector: Optional[Dict[str, Any]] = None, element_id: Optional[str] = None) -> Dict[str, Any]:
         key = "{PGDN}" if str(direction or "down").lower() != "up" else "{PGUP}"
@@ -819,7 +830,9 @@ class WindowsUiAgent:
             )
             return {"element": element.dict(), "direction": direction or "down", "amount": amount}
 
-        return await asyncio.to_thread(_run)
+        ui_lock = get_ui_lock()
+        async with ui_lock.acquire_operation("scroll"):
+            return await asyncio.to_thread(_run)
 
     async def read_element_text(self, *, hwnd: Optional[int] = None, title: Optional[str] = None, process_name: Optional[str] = None, selector: Optional[Dict[str, Any]] = None, element_id: Optional[str] = None) -> Dict[str, Any]:
         def _run() -> Dict[str, Any]:

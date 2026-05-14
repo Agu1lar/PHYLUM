@@ -141,14 +141,25 @@ class ToolRegistry:
                     retryable=structured.get("error") in {"timeout"},
                     details={"risk": structured.get("risk"), "meta": structured.get("meta")},
                 )
+            stdout = command_result.get("stdout") or ""
+            stderr = command_result.get("stderr") or ""
+            if structured.get("ok"):
+                summary_text = "Command executed successfully." if stdout.strip() else "Command executed successfully (no output)."
+            else:
+                summary_text = issue.message if issue else "Command failed."
             return ActionResult(
                 status="succeeded" if structured.get("ok") else "failed",
-                summary="Command executed successfully." if structured.get("ok") else (issue.message if issue else "Command failed."),
+                summary=summary_text,
                 tool=tool_name,
                 action=action,
                 semantic_type=metadata.get("semantic_type", "command"),
                 target=target,
-                data={"stdout": command_result.get("stdout"), "stderr": command_result.get("stderr")},
+                data={
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "returncode": command_result.get("returncode"),
+                    "duration_seconds": command_result.get("duration_seconds"),
+                },
                 effects=ActionEffects(changed=bool(metadata.get("mutates_state")) and bool(structured.get("ok"))),
                 issue=issue,
                 diagnostics={"raw": raw_result},

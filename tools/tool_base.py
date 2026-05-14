@@ -10,6 +10,12 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+try:
+    from hung_process_reaper import reap_if_hung, TargetContext
+except ImportError:
+    reap_if_hung = None  # type: ignore[assignment]
+    TargetContext = None  # type: ignore[assignment]
+
 
 class ToolExecutionError(Exception):
     pass
@@ -30,6 +36,8 @@ class BaseTool:
         self.default_timeout = default_timeout
         self.default_retries = default_retries
         self.logger = logging.getLogger(self.__class__.__name__)
+        self._target_context: Optional[Any] = None
+        self._reap_on_timeout: bool = False
 
     async def validate(self, payload: BaseModel) -> None:
         """Override for custom validation. Should raise ValueError on invalid input."""
@@ -71,6 +79,7 @@ class BaseTool:
             except asyncio.TimeoutError as te:
                 self.logger.warning("Tool %s attempt %s timed out after %s seconds", self.__class__.__name__, attempt, timeout)
                 last_exc = te
+                await self._try_reap_hung_process()
                 await asyncio.sleep(min(2 ** attempt, 10))
             except Exception as exc:
                 self.logger.exception("Tool %s attempt %s failed: %s", self.__class__.__name__, attempt, exc)
@@ -78,3 +87,29 @@ class BaseTool:
                 await asyncio.sleep(min(2 ** attempt, 10))
         root_message = str(last_exc).strip() if last_exc is not None else "unknown tool error"
         raise ToolExecutionError(f"All {retries} attempts failed: {root_message}") from last_exc
+
+    async def _try_reap_hung_process(self) -> None:
+        """If a target context is set and reaping is enabled, attempt to kill
+        the hung process so the blocked thread-pool thread can exit."""
+        if not self._reap_on_timeout or not self._target_context:
+            return
+        if reap_if_hung is None:
+            return
+        try:
+            ctx = self._target_context
+            result = await reap_if_hung(ctx)
+            if result.reaped:
+                self.logger.warning(
+                    "HungProcessReaper killed %s (pid=%d) after timeout in %s",
+                    result.process_name, result.killed_pid, self.__class__.__name__,
+                )
+            elif result.confirmed_hung:
+                self.logger.warning(
+                    "Process confirmed hung but kill failed: %s", result.reason,
+                )
+            else:
+                self.logger.debug("Reaper check: %s", result.reason)
+        except Exception:
+            self.logger.debug("Reaper failed", exc_info=True)
+        finally:
+            self._target_context = None

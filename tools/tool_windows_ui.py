@@ -11,6 +11,11 @@ from tool_base import BaseTool
 from windows_ui_agent import WindowsUiAgent, WindowsUiUnavailable
 from windows_ui_models import WindowsUiRequest
 
+try:
+    from hung_process_reaper import TargetContext
+except ImportError:
+    TargetContext = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,6 +26,7 @@ class WindowsUiTool(BaseTool):
     def __init__(self, *, default_timeout: int = 30, default_retries: int = 1, world_model=None):
         super().__init__(default_timeout=default_timeout, default_retries=default_retries)
         self.agent = WindowsUiAgent()
+        self._reap_on_timeout = True
         if world_model is not None:
             self.agent.set_world_model(world_model)
 
@@ -66,7 +72,19 @@ class WindowsUiTool(BaseTool):
             diagnostics={"backend": "pywinauto"},
         )
 
+    def _set_target_ctx(self, payload: WindowsUiRequest) -> None:
+        if TargetContext is not None:
+            self._target_context = TargetContext(
+                hwnd=payload.hwnd or 0,
+                pid=0,
+                process_name=payload.process_name or "",
+                title=payload.title or "",
+                tool_name="windows_ui",
+                action=payload.action,
+            )
+
     async def _run(self, payload: WindowsUiRequest) -> ActionResult:
+        self._set_target_ctx(payload)
         try:
             if payload.action == "inspect_window":
                 details = await self.agent.inspect_window(

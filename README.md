@@ -50,7 +50,7 @@ The entire cycle runs as a **directed state graph** with 13 node types and condi
 | Persistence | SQLite (via aiosqlite), JSON KV store |
 | Vector DB | LanceDB (embedded, serverless) |
 | Validation | Pydantic |
-| Tests | pytest, pytest-asyncio (420+ tests) |
+| Tests | pytest, pytest-asyncio (1200+ tests across 49 suites) |
 
 ---
 
@@ -66,6 +66,29 @@ These capabilities have graduated from the roadmap and are part of PHYLUM's curr
 - **Context window management**: `ContextWindowManager` compresses old tool results, preserves paths/URLs/numbers/status/IDs, keeps the recent window intact and applies emergency drop when needed.
 - **Web research as autonomous discovery**: the agent uses `web.search_web` as an internal learning tool when it doesn't know a technique, prioritizes official sources/Microsoft Learn/StackOverflow and caches results as `web_resource` in the World Model.
 - **Prompt/tool caching**: system prompt, tool definitions and provider-aware payloads are cached in-process; Anthropic uses `cache_control=ephemeral`.
+- **Explicit event bus**: first-class async pub/sub (`EventBus`) with 30+ typed events, wildcard subscriptions, history buffer and concurrent handler dispatch. State transitions, tool calls, approvals, recoveries and fallbacks are all events.
+- **Robust semantic verification**: `GoalVerifier` checks if the objective was actually achieved; `SemanticValidator` checks if the result makes sense in context; `PostconditionChecker` confirms side effects of mutations (file exists after write, etc.).
+- **Execution economics**: `CostTracker` accumulates tokens/time/cost per run with pricing for 15+ models; `PathComplexityAnalyzer` scores tool/step/retry/replan/error complexity; `StoppingHeuristics` decides when to stop based on budget, errors, diminishing returns and confidence; `RouteOptimizer` picks the most efficient path from historical data.
+- **Per-run cost budget with hard stop**: each agentic loop run has a USD budget (default $0.25) and token budget (default 80k tokens). If the budget is exceeded mid-run, the loop halts gracefully with a summary of completed work instead of silently spending more.
+- **Pluggable embedding models**: `EmbeddingProvider` abstraction with `FeatureHashProvider` (default, offline, deterministic) and `SentenceTransformerProvider` (all-MiniLM-L6-v2) with lazy loading and automatic fallback.
+- **Hybrid re-ranking (BM25 + vector)**: full Okapi BM25 scorer with inverted index, combined with vector similarity via reciprocal rank fusion (RRF) for both strategy and entity search.
+- **Incremental batch indexing**: `batch_upsert_strategies()` and `batch_upsert_entities()` for efficient bulk updates to the semantic index with configurable batch sizes.
+- **Visual perception and hybrid computer-use**: screenshot capture and OCR, visual element detection, visual grounding (maps OCR detections to UIA selectors), coordinate-based mouse/keyboard fallback with verified bounding boxes, post-action visual verification (before/after comparison, modal/spinner/error detection), visual run replay with redacted screenshots and action annotations, and anti-fragility policy (prefer native API, use visual only when UIA/COM/DOM fail).
+- **Operational skills library**: `SkillManifest` (name, version, semver, permissions, I/O schema, risk descriptors), `SkillRegistry` (persistent on-disk, import/export), `SkillRunner` (sandbox execution with capability declaration and integrity verification).
+- **Persistent codebase map**: `CodebaseMap` with AST-based Python scanner, regex-based JS/TS/config scanner, SQLite-backed storage, incremental/full scan, and query API for symbols, imports, routes, tests, configs and ownership per file.
+- **Test diagnostic loop**: `TestDiagnosticLoop` orchestrates run → interpret → patch → rerun → expand cycle with `TestRunner`, `FailureInterpreter` and `RegressionExpander` for pytest/jest.
+- **Patch planner**: `PatchPlanner` decomposes large changes by files/owners with risk scoring (`RiskAssessor`), topological ordering (`DependencyOrderer` via Kahn's algorithm) and CODEOWNERS integration (`OwnerResolver`).
+- **Heartbeat and incremental progress**: `HeartbeatEmitter` for periodic async heartbeats during long tools, `ProgressTracker` for multi-phase progress with ETA estimation, both integrated with the event bus.
+- **Process watchdog**: `ProcessWatchdog` and `FrozenWindowDetector` monitor processes/windows for unresponsiveness via Win32 `IsHungAppWindow`/`SendMessageTimeout`, with configurable recovery actions (retry_message, close_graceful, kill, restart).
+- **Contextual boosting**: search results are re-ranked by task domain (e.g. "office" boosts `document_alias` by 0.25 over `share`/`device`), with a configurable boost map for 11 task categories.
+- **Cross-reference entity linking**: entities link to related entities (e.g. `app_path` → selectors → `document_alias`) with bidirectional/unidirectional links, relation labels, and `find_cross_references()` with configurable depth traversal.
+- **UI operation lock**: `UIOperationLock` async mutex serialises all mouse/keyboard/clipboard operations; `CursorGuard` saves/restores cursor position; `InterferenceDetector` detects user mouse movement and focus changes; optional `InputGuard` blocks user input during critical sequences with safety timeout.
+- **Hung process reaper**: when a tool times out on a frozen app (e.g. Excel COM hang), the reaper confirms the process is hung via `IsHungAppWindow`, kills it with `taskkill /F` to free the blocked thread, and emits a `process_reaped` event.
+- **LLM API retry with backoff**: transient errors (HTTP 429/500/502/503/529) and connection failures are retried up to 3 times with exponential backoff, `Retry-After` header parsing, and structured `LLMApiError` on exhaustion.
+- **Agentic pipeline fallback**: if the LLM-driven agentic pipeline fails (API error, parsing error), the system automatically falls back to the local heuristic pipeline, preserving any work already completed by the agentic pipeline.
+- **Tool result compaction**: `_compact_tool_result()` strips binary data, caps stdout/stderr at 1500 chars, removes internal diagnostic fields, and limits total tool result size to 3000 chars before sending to the LLM.
+- **Compact system prompt**: the system prompt was reduced by 82% (from ~1933 tokens to ~357 tokens), focusing on actionable directives rather than verbose examples. Includes a hint for `ConvertTo-Json` over `Format-Table` to save output tokens.
+- **Anthropic message merging**: consecutive tool results are merged into a single `user` message with multiple `tool_result` blocks, preventing HTTP 400 errors from Anthropic's alternating-role requirement.
 
 ---
 
@@ -108,21 +131,37 @@ Three compiled graph topologies: **agentic** (LLM-driven), **local_heuristic** (
 | File | Responsibility |
 |---|---|
 | `app_main.py` | FastAPI app, REST endpoints, daemon lifecycle |
-| `runtime_manager.py` | Run orchestration, pipelines, daemon loop |
-| `agentic_loop.py` | LLM loop with tool-calling and reflection |
-| `action_executor.py` | Task execution with recovery |
+| `runtime_manager.py` | Run orchestration, pipelines, daemon loop, agentic fallback |
+| `agentic_loop.py` | LLM loop with tool-calling, cost budget, result compaction |
+| `action_executor.py` | Task execution with recovery and goal verification |
 | `recovery_engine.py` | Failure classification, target_node for graph |
 | `execution_strategy.py` | Autonomous execution mode decision |
+| `execution_economics.py` | CostTracker, PathComplexity, StoppingHeuristics, RouteOptimizer |
+| `event_bus.py` | Async pub/sub event bus with 30+ typed events |
+| `semantic_verifier.py` | GoalVerifier, SemanticValidator, PostconditionChecker |
+| `context_window.py` | Context window compression and management |
 | `canonical_tools.py` | Canonical tool catalog |
 | `tool_registry.py` | Tool instantiation and dispatch |
 | `state_graph.py` | State graph engine |
 | `graph_definitions.py` | Graph topologies per pipeline |
-| `world_model.py` | Typed entities with confidence and TTL |
+| `world_model.py` | Typed entities with confidence, TTL, boosting and cross-refs |
 | `strategy_memory.py` | Strategy history by objective type |
-| `semantic_index.py` | Vector DB for semantic search |
+| `semantic_index.py` | Vector DB, BM25, hybrid re-ranking, pluggable embedders |
 | `prompt_cache.py` | Prompt and tool cache for LLM |
+| `multi_provider_client.py` | Multi-provider LLM client with retry, backoff, message merging |
 | `selector_healing.py` | UI selector self-healing |
 | `sandbox_executor.py` | Isolated Python/PowerShell execution |
+| `skill_manifest.py` | Skill manifest, registry, runner |
+| `codebase_map.py` | Persistent codebase map with AST scanning |
+| `test_diagnostic_loop.py` | Test diagnostic loop (run/interpret/patch/rerun/expand) |
+| `patch_planner.py` | Patch decomposition with risk and dependency ordering |
+| `heartbeat.py` | Heartbeat emitter and progress tracker |
+| `process_watchdog.py` | Frozen window detector and process watchdog |
+| `ui_lock.py` | UI operation lock, cursor guard, interference detector |
+| `hung_process_reaper.py` | Hung process detection and forced termination |
+| `visual_grounding.py` | Visual grounding engine (OCR → UIA selectors) |
+| `visual_replay.py` | Visual run replay recorder |
+| `visual_policy.py` | Anti-fragility policy for visual automation |
 | `artifact_processor.py` | Internal file processing |
 | `dynamic_tool_creator.py` | Runtime micro-tool creation |
 | `durable_queue.py` | Durable goal queue (SQLite) |
@@ -138,6 +177,8 @@ Three compiled graph topologies: **agentic** (LLM-driven), **local_heuristic** (
 - **Process and window management**: list, open, close, bring to focus
 - **Deep Explorer**: mapped drives, folders, open window context
 - **Native UI Automation** via pywinauto: inspect, click, fill, select, scroll, hotkeys, wait for elements
+- **UI Operation Lock**: async mutex serialises all mouse/keyboard/clipboard operations so only one runs at a time; includes cursor save/restore, user interference detection (cursor movement + focus change), and optional `BlockInput` for critical multi-step sequences with hard safety timeout
+- **Hung Process Reaper**: when a tool times out on a frozen application (e.g. Excel COM hang), the reaper confirms the process is hung via `IsHungAppWindow`, kills it with `taskkill /F` to free the blocked thread-pool thread, and emits a `process_reaped` event; integrated into `BaseTool.run()` for `WindowsUiTool` (30s) and `OfficeTool` (120s)
 - **Automatic selector healing**: when a UI selector fails, the agent searches for similar candidates in the World Model, tests them against the live UI and updates with renewed confidence
 - **Headless Office COM adapters**: Word (open, search text, export PDF, save-as, create documents), Excel (read ranges, list sheets), Outlook (read recent emails, search messages, create drafts) — all running in background without requiring the user to open any application
 - **Operational discovery**: installed applications, services, SMB shares, clipboard, notifications
@@ -177,6 +218,8 @@ Three compiled graph topologies: **agentic** (LLM-driven), **local_heuristic** (
 
 - **Typed World Model** with 9 entity types: share, app_path, document_alias, selector, path_candidate, device, web_resource, user_preference, environment
 - **Confidence with temporal decay**: each entity has a 0.0-1.0 score that decays 0.05/day, with TTL/expiration per type
+- **Contextual Boosting**: search results are re-ranked by task domain (e.g. "office" boosts `document_alias` over `share`/`device`)
+- **Cross-Reference linking**: entities link to related entities (e.g. app_path → selectors, selectors → document_aliases) with graph traversal
 - **Strategy Memory**: records successful tool call sequences by objective type, with confidence, used_count and context_tags
 - **Semantic search** via local Vector DB (LanceDB): finds strategies and entities by semantic similarity, not just substring
 - **Automatic reuse**: UI selectors, network paths, app locations and past strategies are reused without re-discovery
@@ -198,12 +241,18 @@ Three compiled graph topologies: **agentic** (LLM-driven), **local_heuristic** (
 - **Safety classification**: each action is classified as allow/require_approval/deny
 - **Real cancel**: runs can be cancelled mid-execution with cleanup
 
-### 9. Performance optimizations
+### 9. Performance and cost optimizations
 
-- **Prompt caching**: system prompt (~3000+ tokens) and tool definitions (~35+ tools) cached in-process between steps
-- **Native Anthropic prompt caching**: cache_control=ephemeral for server-side provider cache
+- **Prompt caching**: compact system prompt (~357 tokens) and tool definitions cached in-process between steps
+- **Native Anthropic prompt caching**: `cache_control=ephemeral` for server-side provider cache (78% cost reduction on repeated context)
 - **Provider-aware**: zero caching overhead for providers without support
 - **Local feature hashing**: 128-dimension embeddings without external API for semantic search
+- **Per-run cost budget**: hard stop at $0.25 USD / 80k tokens per run (configurable), preventing runaway costs
+- **Tool result compaction**: binary data filtered, stdout/stderr capped at 1500 chars, total tool result capped at 3000 chars before LLM sees it
+- **LLM response limits**: max_tokens capped at 2048 (normal) / 8000 (thinking) to control output costs
+- **Context window compression**: 40k token budget with automatic compression of old messages, keeping only the 3 most recent turns intact
+- **Sub-agent budgets**: each parallel branch limited to 3 steps, 4 tool calls, 60s timeout, $0.05 USD, 3k tokens
+- **Stopping heuristics**: automatic stop on budget exhaustion (85%), 2 consecutive errors, diminishing returns, or confidence below 20%
 
 ---
 
@@ -213,24 +262,32 @@ The canonical catalog shared by planner, runtime, API and UI:
 
 | Tool | Actions |
 |---|---|
-| `shell` | Command execution |
+| `shell` | Command execution (PowerShell/cmd) |
 | `filesystem` | Read, write, search, copy/move, organize, undo |
-| `memory` | World model + strategy memory (30+ actions) + semantic search |
+| `memory` | World model + strategy memory (30+ actions) + semantic search + boosted search + cross-references |
 | `browser` | Playwright for DOM and navigation |
-| `web` | HTTP requests |
+| `web` | HTTP requests, web search, resource caching |
 | `package_manager` | Package management |
 | `software_inventory` | Installed software inventory |
 | `env_manager` | Environment variables |
-| `driver_manager` | Device drivers |
+| `driver_manager` | Device drivers and printers |
 | `os` | System operations |
 | `desktop` | Processes, windows, Explorer, drives, clipboard, services |
-| `windows_ui` | Inspect, click, fill, scroll, hotkeys, wait |
+| `windows_ui` | Inspect, click, fill, scroll, hotkeys, wait (with UI lock) |
 | `share_discovery` | SMB shares and Explorer context |
 | `document_intelligence` | Inspection, extraction, document search |
-| `office` | Word (open, search, create, export PDF), Excel (read ranges, list sheets), Outlook (read recent emails, search, draft) — all headless |
+| `office` | Word, Excel, Outlook — all headless via COM |
 | `sandbox` | Python/PowerShell execution in sandbox |
 | `artifact` | Internal file processing |
 | `dynamic_tool` | Micro-tool creation and execution |
+| `skill` | Skill manifest, registration, execution |
+| `visual` | Screenshot capture, OCR, visual grounding |
+| `codebase_map` | Codebase scanning, symbol/import/route queries |
+| `test_diagnostic` | Test diagnostic loop (run/interpret/patch/rerun) |
+| `patch_planner` | Change decomposition with risk analysis |
+| `heartbeat` | Long-tool heartbeat and progress tracking |
+| `execution_economics` | Cost tracking, stopping heuristics, route optimization |
+| `subagent` | Parallel branches with isolated budgets |
 
 ---
 
@@ -320,11 +377,12 @@ The Vector DB (LanceDB) uses local feature hashing (128 dim, cosine metric) — 
 
 ### Prompt caching
 
-In a 16-step agentic loop, the system prompt (~3000+ tokens) and tool definitions (~35 tools) were rebuilt 16 times. With caching:
+In a 10-step agentic loop, the compact system prompt (~357 tokens) and tool definitions (~35 tools) are built once and reused across all steps. With caching:
 
-- Built **once**, reused **15 times**
-- For Anthropic: `cache_control=ephemeral` activates server-side cache
+- Built **once**, reused across all subsequent steps
+- For Anthropic: `cache_control=ephemeral` activates server-side cache (78% cost reduction)
 - For other providers: zero overhead
+- Tool results are compacted and sanitized before being added to messages, saving additional tokens
 
 ---
 
@@ -374,19 +432,34 @@ The backend exposes endpoints to verify operational readiness:
 
 ## Test coverage
 
-**420+ tests** organized by component:
+**1200+ tests** across 49 suites, organized by component:
 
-| Suite | Tests | Coverage |
-|---|---|---|
-| `test_phase1_sandbox.py` | 33 | Sandbox executor, artifact processor, dynamic tools |
-| `test_phase2_world_model.py` | 63 | WorldEntity, WorldModel, StrategyRecord, StrategyMemory, MemoryTool |
-| `test_phase3_runtime.py` | 41 | DurableQueue, SessionManager, job checkpoints, goal decomposition |
-| `test_phase4_autonomy.py` | 52 | ExecutionStrategy, script recovery, orchestration, tool gaps |
-| `test_state_graph.py` | 51 | GraphNode, GraphEdge, StateGraph, GraphExecutor, recovery targets |
-| `test_selector_healing.py` | 32 | SelectorHealer, similarity, WorldModel integration, end-to-end |
-| `test_prompt_cache.py` | 33 | PromptCache, CacheStats, Anthropic integration, lifecycle |
-| `test_semantic_index.py` | 31 | Embeddings, LanceDB, semantic search, cross-domain matching |
-| Others | 84+ | Runtime, providers, shell, filesystem, network, planner, reflection |
+| Suite | Coverage |
+|---|---|
+| `test_phase1_sandbox.py` | Sandbox executor, artifact processor, dynamic tools |
+| `test_phase2_world_model.py` | WorldEntity, WorldModel, StrategyRecord, StrategyMemory, MemoryTool |
+| `test_phase3_runtime.py` | DurableQueue, SessionManager, job checkpoints, goal decomposition |
+| `test_phase4_autonomy.py` | ExecutionStrategy, script recovery, orchestration, tool gaps |
+| `test_state_graph.py` | GraphNode, GraphEdge, StateGraph, GraphExecutor, recovery targets |
+| `test_selector_healing.py` | SelectorHealer, similarity, WorldModel integration, end-to-end |
+| `test_prompt_cache.py` | PromptCache, CacheStats, Anthropic integration, lifecycle |
+| `test_semantic_index.py` | Embeddings, LanceDB, semantic search, cross-domain matching |
+| `test_event_bus.py` | EventBus, pub/sub, wildcards, async handlers, history |
+| `test_semantic_verifier.py` | GoalVerifier, SemanticValidator, PostconditionChecker |
+| `test_execution_economics.py` | CostTracker, PathComplexity, StoppingHeuristics, RouteOptimizer |
+| `test_embedding_bm25_batch.py` | BM25, hybrid re-ranking, batch indexing, pluggable embedders |
+| `test_visual_perception.py` | Visual grounding, visual replay, visual policy, screenshot model |
+| `test_skill_manifest.py` | SkillManifest, SkillRegistry, SkillRunner, capability declaration |
+| `test_codebase_map.py` | CodebaseMap, PythonScanner, PatternScanner, incremental updates |
+| `test_diagnostic_and_planner.py` | TestDiagnosticLoop, PatchPlanner, RiskAssessor, DependencyOrderer |
+| `test_heartbeat_watchdog.py` | HeartbeatEmitter, ProgressTracker, ProcessWatchdog, FrozenWindowDetector |
+| `test_hung_process_reaper.py` | Hung process reaper, target context, IsHungAppWindow integration |
+| `test_contextual_boost_crossref.py` | Contextual boosting, cross-reference linking, graph traversal |
+| `test_ui_lock.py` | UIOperationLock, CursorGuard, InterferenceDetector, InputGuard |
+| `test_subagent_branches.py` | Subagent parallel branches, budget enforcement, cascading cancel |
+| `test_context_window.py` | ContextWindowManager, compression, emergency drop |
+| `test_multi_provider_client.py` | LLM API retry, Anthropic message merging, LLMApiError |
+| Others (26 suites) | Runtime, providers, shell, filesystem, network, planner, reflection, downloads, extended thinking, parallel calls, agentic discovery, persistence, and more |
 
 ---
 
@@ -396,19 +469,11 @@ The backend exposes endpoints to verify operational readiness:
 
 #### Architectural governance
 
-The system already has ~20 modules with distinct responsibilities. The biggest risk is uncontrolled complexity.
+The system already has ~30 modules with distinct responsibilities. The biggest risk is uncontrolled complexity.
 
 - [ ] Clear contracts between layers (interfaces, not implementations)
 - [ ] Explicit boundaries between modules with contract tests
 - [ ] Architectural invariants documented and enforced by CI
-
-#### Explicit event bus
-
-The system is already implicitly event-driven (retries, replanning, handoffs, approvals, pause/resume). The natural evolution is a first-class event bus.
-
-- [x] Event bus between components (decouple orchestration from execution)
-- [x] State transitions as first-class events
-- [x] New consumers without modifying producers
 
 #### Sandbox hardening
 
@@ -420,65 +485,24 @@ Dynamic Python/PowerShell execution in an agentic environment requires robust pr
 - [ ] Provenance (track origin of each script: who generated it, why, when)
 - [ ] Audit trails (complete log of inputs and outputs)
 
-#### Robust semantic verification
+#### Operational skills library (remaining)
 
-Beyond checking whether the tool returned success, verify whether the real objective was achieved:
+The skill manifest, registry and runner are implemented. What's still missing:
 
-- [x] Goal verification ("was the objective actually achieved?")
-- [x] Semantic validation ("does the result make sense in context?")
-- [x] Postcondition checks ("was the report created?", "was the email sent?")
-
-#### Execution economics
-
-Economic execution control to avoid expensive loops and wasteful exploration:
-
-- [x] Cost per run (tokens, time, resources)
-- [x] Path complexity (tools and steps per approach)
-- [x] Stopping heuristics (when to ask for help vs. explore further)
-- [x] Route optimization (choose the most efficient path)
-
-#### Real embedding models
-
-The semantic index uses local feature hashing (fast, offline, deterministic). For more sophisticated searches:
-
-- [x] Plug-in for sentence-transformers or all-MiniLM models
-- [x] Hybrid re-ranking (BM25 + vector)
-- [x] Incremental indexing with batch updates
-
-### Advanced capabilities (next level)
-
-#### Visual perception and hybrid computer-use
-
-PHYLUM avoids pixel automation as the primary path, but broad automation systems need visual fallback when there is no reliable native API.
-
-- [x] Screenshot state model: capture screen/window, OCR, visual elements, coordinates and relationship with UIA
-- [x] Visual grounding: map text/controls detected by screenshot to `windows_ui` selectors
-- [x] Controlled mouse/keyboard fallback by coordinates with verified bounding boxes
-- [x] Post-action visual verification: compare before/after, detect modals, spinners, errors and confirmations
-- [x] Visual run replay: timeline with redacted screenshots and action annotations
-- [x] Anti-fragility policy: prefer native API, use visual only when UIA/COM/DOM fail
-
-#### Operational skills library
-
-The project already creates dynamic tools, but still lacks a layer of versioned, auditable and reusable skills by domain.
-
-- [X] Local skill manifest with name, version, permissions, inputs/outputs and risks
-- [x] Skill runner with sandbox and capability declaration before execution
 - [ ] Skill discovery by objective: choose installed skills before generating a new script
 - [ ] Skill signing/checksum and provenance to prevent execution of altered code without review
 - [ ] Skill evaluation: minimum tests per skill before making available to the agent
 - [ ] Local/offline marketplace: import/export skill packages without telemetry
 
-#### Workspace development automation.
+#### Workspace development automation (remaining)
 
-Since the runtime runs coupled to the local workspace, it can become a stronger engineering operator than a generic desktop executor.
+Codebase map, test diagnostic loop and patch planner are implemented. What's still missing:
 
-- [x] Persistent codebase map: symbols, imports, routes, tests, configs and ownership per file
-- [x] Test diagnostic loop: run test, interpret failure, patch, rerun target test, expand regression
-- [x] Patch planner: decompose large changes by files/owners with risk and application order
 - [ ] Workspace awareness: detect open IDE, branch, venv, task runner, dev ports and related processes
 - [ ] Refactor guardrails: prevent out-of-scope edits and detect accidental changes to unrelated files
 - [ ] Engineering report per run: files touched, commands executed, tests run, remaining risks
+
+### Advanced capabilities (next level)
 
 #### Continuous automation evaluation
 
@@ -502,12 +526,10 @@ For long-running automation, the user needs to understand and control what is ha
 - [ ] Session recorder: transform a manual sequence into a reusable skill/script
 - [ ] Redaction layer for screenshots, logs and tool results before persisting or displaying
 
-#### Long-running automation robustness
+#### Long-running automation robustness (remaining)
 
-Real automations can last minutes or hours and cross unstable networks, frozen apps and restarts.
+Heartbeat, progress tracker and process watchdog are implemented. What's still missing:
 
-- [x] Heartbeat per long tool and standardized incremental progress
-- [x] Frozen window/unresponsive process watchdog with specific recovery
 - [ ] Checkpoint per task graph branch, including large intermediate results
 - [ ] Idempotent resume: avoid repeating mutations already applied after crash
 - [ ] Rollback plan per mutating task when artifacts or known prior state exist

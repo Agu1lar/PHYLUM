@@ -486,13 +486,13 @@ class StoppingHeuristics:
     def __init__(
         self,
         *,
-        max_budget_pct: float = 0.90,
-        max_consecutive_errors: int = 3,
-        max_retries_per_step: int = 3,
-        max_total_retries: int = 8,
-        diminishing_returns_window: int = 5,
-        min_progress_rate: float = 0.2,
-        confidence_floor: float = 0.15,
+        max_budget_pct: float = 0.85,
+        max_consecutive_errors: int = 2,
+        max_retries_per_step: int = 2,
+        max_total_retries: int = 5,
+        diminishing_returns_window: int = 4,
+        min_progress_rate: float = 0.25,
+        confidence_floor: float = 0.20,
     ):
         self.max_budget_pct = max_budget_pct
         self.max_consecutive_errors = max_consecutive_errors

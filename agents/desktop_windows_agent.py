@@ -20,6 +20,7 @@ import psutil
 
 from desktop_windows_models import ExplorerWindowInfo, ServiceInfo, WindowInfo
 from os_inspect_wmi import WmiWrapper
+from ui_lock import get_ui_lock
 
 logger = logging.getLogger(__name__)
 
@@ -629,12 +630,16 @@ class DesktopWindowsAgent:
         raise TimeoutError("window did not appear before timeout")
 
     async def focus_window(self, *, hwnd: Optional[int] = None, title: Optional[str] = None) -> Dict[str, Any]:
-        focused = await asyncio.to_thread(_focus_window, hwnd, title)
-        return {"window": focused.dict()}
+        ui_lock = get_ui_lock()
+        async with ui_lock.acquire_operation("focus_window"):
+            focused = await asyncio.to_thread(_focus_window, hwnd, title)
+            return {"window": focused.dict()}
 
     async def close_window(self, *, hwnd: Optional[int] = None, title: Optional[str] = None) -> Dict[str, Any]:
-        window = await asyncio.to_thread(_close_window, hwnd, title)
-        return {"window": window.dict()}
+        ui_lock = get_ui_lock()
+        async with ui_lock.acquire_operation("close_window"):
+            window = await asyncio.to_thread(_close_window, hwnd, title)
+            return {"window": window.dict()}
 
     async def kill_process(
         self,
@@ -647,12 +652,16 @@ class DesktopWindowsAgent:
         return {"processes": killed}
 
     async def clipboard_get(self) -> Dict[str, Any]:
-        text = await asyncio.to_thread(_clipboard_get)
-        return {"text": text}
+        ui_lock = get_ui_lock()
+        async with ui_lock.acquire_operation("clipboard_get"):
+            text = await asyncio.to_thread(_clipboard_get)
+            return {"text": text}
 
     async def clipboard_set(self, text: str) -> Dict[str, Any]:
-        await asyncio.to_thread(_clipboard_set, text)
-        return {"text": text}
+        ui_lock = get_ui_lock()
+        async with ui_lock.acquire_operation("clipboard_set"):
+            await asyncio.to_thread(_clipboard_set, text)
+            return {"text": text}
 
     async def notify(self, message: str, title: str = "PHYLUM") -> Dict[str, Any]:
         threading.Thread(target=_notify, args=(title, message), daemon=True).start()
