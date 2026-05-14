@@ -182,6 +182,18 @@ async def test_runtime_manager_pauses_for_printer_clarification_on_driver_failur
                     "parsed": None,
                 },
             },
+            "action_result": {
+                "status": "failed",
+                "summary": "validation: provider unavailable",
+                "tool": "driver_manager",
+                "action": "printer_status",
+                "target": None,
+                "issue": {
+                    "kind": "missing_input",
+                    "message": "validation: provider unavailable",
+                    "user_action": "provide_input",
+                },
+            },
         }
 
     monkeypatch.setattr(manager.tool_router, "execute", failing_execute)

@@ -7,6 +7,7 @@ import asyncio
 from typing import Any, Dict, Optional
 
 from action_models import action_needs_model_followup
+from event_bus import EventBus, get_event_bus
 
 
 class RunPausedError(RuntimeError):
@@ -14,8 +15,9 @@ class RunPausedError(RuntimeError):
 
 
 class ActionExecutor:
-    def __init__(self, runtime):
+    def __init__(self, runtime, *, event_bus: Optional[EventBus] = None):
         self.runtime = runtime
+        self.event_bus: EventBus = event_bus or get_event_bus()
 
     async def execute(self, state: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
         max_attempts = int(task.get("max_attempts") or 2)
@@ -48,7 +50,7 @@ class ActionExecutor:
                 task["status"] = "failed"
                 task["error"] = safety_result["safety"]["reason"]
                 state["error"] = task["error"]
-                await self.runtime._emit(
+                await self._emit(
                     "task_failed",
                     {"request_id": state["request_id"], "task_id": task["id"], "error": task["error"]},
                     state=state,
@@ -76,7 +78,7 @@ class ActionExecutor:
                         task["status"] = "blocked"
                         task["error"] = result["action_result"]["summary"]
                         task["reflection"] = {"verdict": "blocked", "summary": result["action_result"]["summary"], "details": result["action_result"], "recommended_action": None}
-                        await self.runtime._emit(
+                        await self._emit(
                             "task_finished",
                             {
                                 "request_id": state["request_id"],
@@ -93,7 +95,7 @@ class ActionExecutor:
                     task["approval_granted"] = False
                     task["error"] = "approval rejected"
                     state["error"] = task["error"]
-                    await self.runtime._emit(
+                    await self._emit(
                         "task_failed",
                         {"request_id": state["request_id"], "task_id": task["id"], "error": task["error"]},
                         state=state,
@@ -107,21 +109,21 @@ class ActionExecutor:
                 task["status"] = "running"
                 await self.runtime._set_run_status(state, "running", current_node="tool_execution")
                 await self.runtime._restore_execution_context(state, task)
-                await self.runtime._emit("task_started", {"request_id": state["request_id"], "task": task}, state=state)
+                await self._emit("task_started", {"request_id": state["request_id"], "task": task}, state=state)
                 self.runtime._raise_if_cancelled(state)
                 result = await self.runtime.execution_layer.execute_tool(
                     inputs=state["inputs"],
                     task=task,
                     cancel_event=self.runtime._cancel_event_for(state["request_id"]),
                 )
-                goal_verification = self.runtime._verify_task_goal(task, result)
+                goal_verification = await self.runtime._verify_task_goal_async(task, result)
                 action_result = result.get("action_result") or {}
                 action_result["goal"] = goal_verification
                 if action_result.get("status") == "succeeded" and not goal_verification.get("satisfied", False):
                     action_result["status"] = "partial"
                     action_result["summary"] = (
-                        f"{action_result.get('summary', 'A acao foi executada.')} "
-                        "A meta ainda precisa de verificacao adicional antes de ser considerada concluida."
+                        f"{action_result.get('summary', '')} "
+                        "The goal still requires additional verification before it can be considered complete."
                     ).strip()
                     result["action_result"] = action_result
                 state["outputs"][task["id"]] = result
@@ -156,6 +158,16 @@ class ActionExecutor:
                             "target_node": task["recovery"].get("target_node"),
                         }
                         result["recovery"] = task["recovery"]
+                        if task["recovery"].get("needs_user"):
+                            await self.runtime._record_task_observation(
+                                state, task=task, result=result,
+                                recovery=task["recovery"],
+                                goal_verification=goal_verification,
+                            )
+                            error_msg = task["recovery"].get("reason") or action_result.get("summary") or "action requires user input"
+                            handoff = self.runtime._handoff_for_recovery(state, task, error_msg)
+                            await self.runtime._pause_for_handoff(state, handoff)
+                            raise RunPausedError()
                     await self.runtime._record_task_observation(
                         state,
                         task=task,
@@ -165,7 +177,7 @@ class ActionExecutor:
                     )
                     task["status"] = self._task_status_for_action_status(action_status)
                     state["error"] = None
-                    await self.runtime._emit(
+                    await self._emit(
                         "task_finished",
                         {
                             "request_id": state["request_id"],
@@ -189,7 +201,7 @@ class ActionExecutor:
                 task["status"] = self._task_status_for_action_status(action_status)
                 if action_status in {"partial", "needs_input", "blocked"}:
                     state["error"] = None
-                    await self.runtime._emit(
+                    await self._emit(
                         "task_finished",
                         {
                             "request_id": state["request_id"],
@@ -207,7 +219,7 @@ class ActionExecutor:
 
                 task["status"] = "completed"
                 state["error"] = None
-                await self.runtime._emit(
+                await self._emit(
                     "task_finished",
                     {
                         "request_id": state["request_id"],
@@ -264,7 +276,7 @@ class ActionExecutor:
                 if task["recovery"]["retryable"]:
                     task["status"] = "retry_scheduled"
                     await self.runtime._set_run_status(state, "recovering", current_node="recovery")
-                    await self.runtime._emit(
+                    await self._emit(
                         "task_retry_scheduled",
                         {
                             "request_id": state["request_id"],
@@ -281,7 +293,7 @@ class ActionExecutor:
                     if script_result is not None:
                         return script_result
                 state["error"] = str(exc)
-                await self.runtime._emit(
+                await self._emit(
                     "task_failed",
                     {"request_id": state["request_id"], "task_id": task["id"], "error": str(exc), "reflection": task["reflection"]},
                     state=state,
@@ -317,7 +329,7 @@ class ActionExecutor:
             "is_script_recovery": True,
             "original_task_id": task["id"],
         }
-        await self.runtime._emit(
+        await self._emit(
             "script_recovery_started",
             {
                 "request_id": state["request_id"],
@@ -348,7 +360,7 @@ class ActionExecutor:
                 task["result"] = result
                 task["recovery"]["script_recovery_succeeded"] = True
                 state["error"] = None
-                await self.runtime._emit(
+                await self._emit(
                     "script_recovery_succeeded",
                     {
                         "request_id": state["request_id"],
@@ -387,6 +399,10 @@ class ActionExecutor:
         if action_status == "partial":
             return "partial"
         return "failed"
+
+    async def _emit(self, event_type: str, payload: Dict[str, Any], *, state: Optional[Dict[str, Any]] = None) -> None:
+        """Emit via the shared event bus while keeping state history in sync."""
+        await self.runtime._emit(event_type, payload, state=state)
 
     def _approval_rejected_result(self, task: Dict[str, Any]) -> Dict[str, Any]:
         action_result = {

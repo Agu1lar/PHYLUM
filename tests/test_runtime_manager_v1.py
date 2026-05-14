@@ -87,8 +87,10 @@ async def test_runtime_manager_emits_approval_and_finishes_after_approval(tmp_pa
     assert Path(target_file).read_text(encoding="utf-8") == "hello"
     assert [event["type"] for event in events] == [
         "run_started",
+        "task_graph_built",
         "task_planned",
         "approval_requested",
+        "run_paused",
         "approval_resolved",
         "task_started",
         "task_finished",
@@ -155,7 +157,9 @@ async def test_runtime_manager_requests_approval_instead_of_failing_for_outside_
     final_state = await manager.wait_for_run(request_id, timeout=10)
 
     assert final_state["status"] == "completed"
-    assert final_state["tasks"][0]["result"]["tool_result"]["details"]["items"] is not None
+    tool_result = final_state["tasks"][0]["result"]["tool_result"]
+    items = (tool_result.get("data") or tool_result.get("details") or {}).get("items")
+    assert items is not None
 
 
 @pytest.mark.asyncio

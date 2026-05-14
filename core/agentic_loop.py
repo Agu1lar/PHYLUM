@@ -8,6 +8,7 @@ import json
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from action_executor import RunPausedError
 from canonical_tools import agentic_tool_definitions, to_openai_tool_call
 from context_window import ContextWindowManager
 from multi_provider_client import MultiProviderClient
@@ -266,7 +267,7 @@ class AgenticLoop:
                     )
                     for item in gathered:
                         if isinstance(item, BaseException):
-                            if isinstance(item, asyncio.CancelledError):
+                            if isinstance(item, (asyncio.CancelledError, RunPausedError)):
                                 raise item
                             results_map["__error__"] = {
                                 "status": "failed",
@@ -618,7 +619,7 @@ class AgenticLoop:
                     gathered = await asyncio.gather(*[_exec_one(tc, task) for tc, task in independent], return_exceptions=True)
                     for item in gathered:
                         if isinstance(item, BaseException):
-                            if isinstance(item, asyncio.CancelledError):
+                            if isinstance(item, (asyncio.CancelledError, RunPausedError)):
                                 raise item
                             results_map["__error__"] = {"status": "failed", "error": f"{item.__class__.__name__}: {item}"}
                             continue

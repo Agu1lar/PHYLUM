@@ -406,9 +406,9 @@ The system already has ~20 modules with distinct responsibilities. The biggest r
 
 The system is already implicitly event-driven (retries, replanning, handoffs, approvals, pause/resume). The natural evolution is a first-class event bus.
 
-- [ ] Event bus between components (decouple orchestration from execution)
-- [ ] State transitions as first-class events
-- [ ] New consumers without modifying producers
+- [x] Event bus between components (decouple orchestration from execution)
+- [x] State transitions as first-class events
+- [x] New consumers without modifying producers
 
 #### Sandbox hardening
 
@@ -424,26 +424,26 @@ Dynamic Python/PowerShell execution in an agentic environment requires robust pr
 
 Beyond checking whether the tool returned success, verify whether the real objective was achieved:
 
-- [ ] Goal verification ("was the objective actually achieved?")
-- [ ] Semantic validation ("does the result make sense in context?")
-- [ ] Postcondition checks ("was the report created?", "was the email sent?")
+- [x] Goal verification ("was the objective actually achieved?")
+- [x] Semantic validation ("does the result make sense in context?")
+- [x] Postcondition checks ("was the report created?", "was the email sent?")
 
 #### Execution economics
 
 Economic execution control to avoid expensive loops and wasteful exploration:
 
-- [ ] Cost per run (tokens, time, resources)
-- [ ] Path complexity (tools and steps per approach)
-- [ ] Stopping heuristics (when to ask for help vs. explore further)
-- [ ] Route optimization (choose the most efficient path)
+- [x] Cost per run (tokens, time, resources)
+- [x] Path complexity (tools and steps per approach)
+- [x] Stopping heuristics (when to ask for help vs. explore further)
+- [x] Route optimization (choose the most efficient path)
 
 #### Real embedding models
 
 The semantic index uses local feature hashing (fast, offline, deterministic). For more sophisticated searches:
 
-- [ ] Plug-in for sentence-transformers or all-MiniLM models
-- [ ] Hybrid re-ranking (BM25 + vector)
-- [ ] Incremental indexing with batch updates
+- [x] Plug-in for sentence-transformers or all-MiniLM models
+- [x] Hybrid re-ranking (BM25 + vector)
+- [x] Incremental indexing with batch updates
 
 ### Advanced capabilities (next level)
 
@@ -451,31 +451,31 @@ The semantic index uses local feature hashing (fast, offline, deterministic). Fo
 
 PHYLUM avoids pixel automation as the primary path, but broad automation systems need visual fallback when there is no reliable native API.
 
-- [ ] Screenshot state model: capture screen/window, OCR, visual elements, coordinates and relationship with UIA
-- [ ] Visual grounding: map text/controls detected by screenshot to `windows_ui` selectors
-- [ ] Controlled mouse/keyboard fallback by coordinates with verified bounding boxes
-- [ ] Post-action visual verification: compare before/after, detect modals, spinners, errors and confirmations
-- [ ] Visual run replay: timeline with redacted screenshots and action annotations
-- [ ] Anti-fragility policy: prefer native API, use visual only when UIA/COM/DOM fail
+- [x] Screenshot state model: capture screen/window, OCR, visual elements, coordinates and relationship with UIA
+- [x] Visual grounding: map text/controls detected by screenshot to `windows_ui` selectors
+- [x] Controlled mouse/keyboard fallback by coordinates with verified bounding boxes
+- [x] Post-action visual verification: compare before/after, detect modals, spinners, errors and confirmations
+- [x] Visual run replay: timeline with redacted screenshots and action annotations
+- [x] Anti-fragility policy: prefer native API, use visual only when UIA/COM/DOM fail
 
 #### Operational skills library
 
 The project already creates dynamic tools, but still lacks a layer of versioned, auditable and reusable skills by domain.
 
-- [ ] Local skill manifest with name, version, permissions, inputs/outputs and risks
-- [ ] Skill runner with sandbox and capability declaration before execution
+- [X] Local skill manifest with name, version, permissions, inputs/outputs and risks
+- [x] Skill runner with sandbox and capability declaration before execution
 - [ ] Skill discovery by objective: choose installed skills before generating a new script
 - [ ] Skill signing/checksum and provenance to prevent execution of altered code without review
 - [ ] Skill evaluation: minimum tests per skill before making available to the agent
 - [ ] Local/offline marketplace: import/export skill packages without telemetry
 
-#### Workspace development automation
+#### Workspace development automation.
 
 Since the runtime runs coupled to the local workspace, it can become a stronger engineering operator than a generic desktop executor.
 
-- [ ] Persistent codebase map: symbols, imports, routes, tests, configs and ownership per file
-- [ ] Test diagnostic loop: run test, interpret failure, patch, rerun target test, expand regression
-- [ ] Patch planner: decompose large changes by files/owners with risk and application order
+- [x] Persistent codebase map: symbols, imports, routes, tests, configs and ownership per file
+- [x] Test diagnostic loop: run test, interpret failure, patch, rerun target test, expand regression
+- [x] Patch planner: decompose large changes by files/owners with risk and application order
 - [ ] Workspace awareness: detect open IDE, branch, venv, task runner, dev ports and related processes
 - [ ] Refactor guardrails: prevent out-of-scope edits and detect accidental changes to unrelated files
 - [ ] Engineering report per run: files touched, commands executed, tests run, remaining risks
@@ -506,8 +506,8 @@ For long-running automation, the user needs to understand and control what is ha
 
 Real automations can last minutes or hours and cross unstable networks, frozen apps and restarts.
 
-- [ ] Heartbeat per long tool and standardized incremental progress
-- [ ] Frozen window/unresponsive process watchdog with specific recovery
+- [x] Heartbeat per long tool and standardized incremental progress
+- [x] Frozen window/unresponsive process watchdog with specific recovery
 - [ ] Checkpoint per task graph branch, including large intermediate results
 - [ ] Idempotent resume: avoid repeating mutations already applied after crash
 - [ ] Rollback plan per mutating task when artifacts or known prior state exist
@@ -557,6 +557,89 @@ Ensure the LLM always generates tool calls with all required fields, instead of 
 - [ ] Client-side pre-validation of arguments before accepting the tool call
 - [ ] Required argument template injected into the prompt per tool
 - [ ] Compliance metrics per tool (which tools the LLM gets wrong most often)
+
+#### Time-travel debugging and state branching
+
+Inspired by [LangGraph's checkpoint system](https://github.com/langchain-ai/langgraph), the ability to navigate historical execution states, modify them, and resume from any point creates powerful debugging and exploration capabilities.
+
+- [ ] State snapshot per graph node: full serializable checkpoint after each node completes
+- [ ] Time-travel API: list, inspect and diff historical snapshots for a run
+- [ ] Branch from checkpoint: select a prior state, modify it, and resume execution as a new branch
+- [ ] State diff viewer: compare any two checkpoints side-by-side (fields changed, tasks added/removed)
+- [ ] Replay with mutation: re-execute a past run with altered inputs or parameters to explore alternatives
+
+#### Graceful drain and cooperative shutdown
+
+Long-running automations need to stop cleanly on SIGTERM, service restart, or user cancel — without losing work or corrupting state.
+
+- [ ] Cooperative drain: signal the runtime to stop after the current step completes, not mid-execution
+- [ ] Drain-aware nodes: nodes can inspect drain state and skip expensive work when shutdown is imminent
+- [ ] Resumable checkpoint on drain: save a full checkpoint before exiting so the run can resume on next startup
+- [ ] SIGTERM handler: automatic drain on process signals with configurable grace period
+- [ ] Drain reason tracking: record why the run was drained (sigterm, user_cancel, quota_exceeded, service_restart)
+
+#### Configurable durability modes
+
+Different automation scenarios require different trade-offs between persistence overhead and crash resilience.
+
+- [ ] Exit-only mode: persist state only when the graph exits (best performance, no mid-run recovery)
+- [ ] Async mode: persist state asynchronously while the next step executes (good balance)
+- [ ] Sync mode: persist state synchronously before starting each step (highest durability)
+- [ ] Per-run durability override: allow each run to specify its durability level based on criticality
+- [ ] Durability metrics: track persistence latency overhead per mode to inform trade-off decisions
+
+#### Dynamic fan-out and map-reduce orchestration
+
+Some tasks require spawning a dynamic number of parallel sub-tasks based on runtime data (e.g., process each file in a directory, check each email in a batch).
+
+- [ ] Dynamic Send API: spawn N parallel tasks from within a node based on runtime-computed inputs
+- [ ] Fan-out with typed results: each spawned task returns a typed result collected by the parent
+- [ ] Fan-in reducer: configurable merge strategy (concat, vote, first-success, custom) for parallel results
+- [ ] Bounded concurrency: limit how many parallel tasks run simultaneously to avoid resource exhaustion
+- [ ] Partial completion: continue with available results even if some branches fail or timeout
+
+#### Structured long-term memory taxonomy
+
+The World Model and Strategy Memory store entities and strategies. A richer taxonomy would enable more sophisticated reasoning across sessions and users.
+
+- [ ] Semantic memory: stable facts about entities, preferences, and environment (persisted indefinitely)
+- [ ] Episodic memory: time-stamped events and interactions with decay and summarization
+- [ ] Procedural memory: learned skills, behaviors, and tool-calling patterns extracted from successful runs
+- [ ] Namespace-based store: organize memories by (user, session, domain) with independent TTL per namespace
+- [ ] Background memory extraction: asynchronous extraction of memories from completed runs without blocking the next turn
+- [ ] Memory conflict resolution: detect and merge contradictory facts across sessions with confidence-weighted resolution
+
+#### Multi-mode streaming pipeline
+
+A single streaming API that supports multiple concurrent output modes for different consumers (UI, logs, debugger, metrics).
+
+- [ ] Values mode: emit full state snapshot after each step (for state inspectors)
+- [ ] Updates mode: emit only changed fields per step (for efficient UI updates)
+- [ ] Messages mode: token-by-token LLM output streaming with metadata (for real-time display)
+- [ ] Custom events mode: emit arbitrary events from within tools/nodes via StreamWriter (for domain-specific consumers)
+- [ ] Debug mode: comprehensive step information including timing, input/output, state diffs (for troubleshooting)
+- [ ] Checkpoint mode: emit checkpoint creation events (for persistence monitoring)
+- [ ] Task mode: emit task start/finish with results and errors (for orchestration dashboards)
+- [ ] Composable modes: subscribe to multiple modes simultaneously in a single stream
+
+#### Graph introspection and visualization API
+
+Programmatic access to the graph topology, execution trace, and node metadata for debugging, documentation, and UI generation.
+
+- [ ] Graph topology export: serialize the compiled graph as JSON/DOT/Mermaid for visualization
+- [ ] Node metadata API: query node type, expected inputs/outputs, edges, and conditions programmatically
+- [ ] Execution trace: record the exact path taken through the graph per run with timing per node
+- [ ] Conditional edge introspection: list all possible branches and which conditions trigger each
+- [ ] Subgraph nesting: visualize nested subgraphs with drill-down into each level
+
+#### Deterministic replay and side-effect isolation
+
+Ensure that workflows can be replayed identically by isolating non-deterministic operations and side effects.
+
+- [ ] Task wrapper for side effects: decorator that marks operations with side effects (API calls, file writes) for replay isolation
+- [ ] Deterministic replay mode: re-execute a past run using recorded task results instead of live execution
+- [ ] Side-effect registry: catalog all side-effecting operations per tool to enable selective replay
+- [ ] Replay diff report: compare live vs. replayed execution to detect regressions or environment drift
 
 ---
 

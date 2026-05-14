@@ -28,6 +28,13 @@ from tool_share_discovery import ShareDiscoveryTool
 from tool_shell import ShellTool
 from tool_software import SoftwareInventoryTool
 from tool_web import WebTool
+from tool_skill import SkillTool
+from tool_visual import VisualTool
+from tool_codebase_map import CodebaseMapTool
+from tool_execution_economics import ExecutionEconomicsTool
+from tool_test_diagnostic import TestDiagnosticTool
+from tool_patch_planner import PatchPlannerTool
+from tool_heartbeat import HeartbeatTool
 from tool_windows_ui import WindowsUiTool
 
 
@@ -62,6 +69,13 @@ class ToolRegistry:
             "sandbox": SandboxTool(),
             "artifact": ArtifactTool(),
             "dynamic_tool": DynamicToolTool(),
+            "visual": VisualTool(),
+            "skill": SkillTool(),
+            "codebase_map": CodebaseMapTool(),
+            "execution_economics": ExecutionEconomicsTool(),
+            "test_diagnostic": TestDiagnosticTool(),
+            "patch_planner": PatchPlannerTool(),
+            "heartbeat": HeartbeatTool(),
         }
 
     def supports(self, tool_name: str) -> bool:

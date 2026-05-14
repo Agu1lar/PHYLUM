@@ -23,6 +23,7 @@ class AgentTurnResult(BaseModel):
     tool_calls: List[NormalizedToolCall] = Field(default_factory=list)
     thinking: str = ""
     thinking_blocks: List[Dict[str, Any]] = Field(default_factory=list)
+    usage: Dict[str, int] = Field(default_factory=dict)
 
 
 class MultiProviderClient:
@@ -124,7 +125,8 @@ class MultiProviderClient:
             )
             for tool_call in message.get("tool_calls", [])
         ]
-        return AgentTurnResult(content=self._coerce_content(message.get("content")), tool_calls=tool_calls)
+        usage = self._extract_usage(data)
+        return AgentTurnResult(content=self._coerce_content(message.get("content")), tool_calls=tool_calls, usage=usage)
 
     async def _complete_gemini(
         self,
@@ -163,7 +165,8 @@ class MultiProviderClient:
                         arguments=function_call.get("args") or {},
                     )
                 )
-        return AgentTurnResult(content="\n".join(chunk for chunk in text_chunks if chunk).strip(), tool_calls=tool_calls)
+        usage = self._extract_usage(data)
+        return AgentTurnResult(content="\n".join(chunk for chunk in text_chunks if chunk).strip(), tool_calls=tool_calls, usage=usage)
 
     ANTHROPIC_THINKING_MODELS = {"claude-sonnet-4-6", "claude-opus-4-6", "claude-opus-4-7"}
 
@@ -242,12 +245,26 @@ class MultiProviderClient:
                     )
                 )
 
+        usage = self._extract_usage(data)
         return AgentTurnResult(
             content="\n".join(chunk for chunk in text_chunks if chunk).strip(),
             tool_calls=tool_calls,
             thinking="\n".join(thinking_text_chunks).strip(),
             thinking_blocks=thinking_blocks,
+            usage=usage,
         )
+
+    @staticmethod
+    def _extract_usage(data: Dict[str, Any]) -> Dict[str, int]:
+        """Normalize token usage from any provider response."""
+        usage = data.get("usage") or data.get("usageMetadata") or {}
+        return {
+            "prompt_tokens": usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0) or usage.get("promptTokenCount", 0),
+            "completion_tokens": usage.get("output_tokens", 0) or usage.get("completion_tokens", 0) or usage.get("candidatesTokenCount", 0),
+            "total_tokens": usage.get("total_tokens", 0) or usage.get("totalTokenCount", 0),
+            "cache_creation_tokens": usage.get("cache_creation_input_tokens", 0),
+            "cache_read_tokens": usage.get("cache_read_input_tokens", 0),
+        }
 
     def _model_supports_thinking(self, model: str) -> bool:
         base = model.split("-2")[0] if "-2" in model else model

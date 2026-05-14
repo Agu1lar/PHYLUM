@@ -19,6 +19,8 @@ from agentic_loop import AgenticLoop
 from canonical_tools import action_metadata, normalize_agentic_task, supported_tools as canonical_supported_tools, task_title
 from credential_store import CredentialStore
 from desktop_windows_agent import DesktopWindowsAgent
+from event_bus import EventBus, EventType, get_event_bus
+from semantic_verifier import SemanticVerifier
 from multi_provider_client import MultiProviderClient
 from nodes_reflection import ReflectionNode
 from nodes_safety import SafetyNode
@@ -74,8 +76,15 @@ class RuntimeManager:
         *,
         credential_store: Optional[CredentialStore] = None,
         provider_client: Optional[MultiProviderClient] = None,
+        event_bus: Optional[EventBus] = None,
     ):
         self.emitter = emitter
+        self.event_bus: EventBus = event_bus or get_event_bus()
+
+        async def _ws_bridge(event):
+            await emitter({"type": event.type.value, "payload": event.payload})
+
+        self.event_bus.subscribe_all(_ws_bridge)
         self.persistence = Persistence.get()
         self.provider_client = provider_client or MultiProviderClient()
 
@@ -116,7 +125,8 @@ class RuntimeManager:
         self.execution_strategy = self.cognitive_layer.execution_strategy
         self.recovery_engine = self.operational_layer.recovery_engine
         self._wire_world_model_to_ui_tool()
-        self.action_executor = ActionExecutor(self)
+        self.semantic_verifier = SemanticVerifier()
+        self.action_executor = ActionExecutor(self, event_bus=self.event_bus)
 
         self.active_runs: Dict[str, Dict[str, Any]] = {}
         self.run_tasks: Dict[str, asyncio.Task] = {}
@@ -1425,50 +1435,26 @@ class RuntimeManager:
                 except Exception:
                     pass
 
-    def _verify_task_goal(self, task: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
-        action_result = (result.get("action_result") or {}) if isinstance(result, dict) else {}
-        status = action_result.get("status")
-        if status != "succeeded":
-            return {
-                "satisfied": False,
-                "strategy": "defer_to_followup",
-                "confidence": 0.0,
-                "rationale": "The action itself did not succeed, so the goal cannot be considered satisfied yet.",
-                "evidence": {"status": status, "summary": action_result.get("summary")},
-                "recommended_followups": [],
-            }
+    async def _verify_task_goal_async(self, task: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the full semantic verification pipeline (goal + semantic + postcondition)."""
+        return await self.semantic_verifier.verify(task, result)
 
-        tool = task.get("tool")
-        action = task.get("action")
-        evidence = {
-            "target": action_result.get("target") or {},
-            "data": action_result.get("data") or {},
-        }
-        if tool == "desktop" and action in {"open_app", "open_path", "open_file"}:
-            return {
-                "satisfied": False,
-                "strategy": "verify_window_or_process",
-                "confidence": 0.45,
-                "rationale": "The launch request was accepted, but the runtime should still verify the resulting window, process or opened path.",
-                "evidence": evidence,
-                "recommended_followups": ["desktop.wait_for_window", "desktop.list_windows", "desktop.list_processes"],
-            }
-        return {
-            "satisfied": True,
-            "strategy": "tool_result",
-            "confidence": 0.8,
-            "rationale": "The tool returned a successful semantic result and no extra verification hook is required.",
-            "evidence": evidence,
-            "recommended_followups": [],
-        }
+    def _verify_task_goal(self, task: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+        """Synchronous wrapper kept for backward compatibility.
+
+        Returns a basic goal verification using only GoalVerifier (no async
+        postcondition checks). Callers that can ``await`` should prefer
+        ``_verify_task_goal_async`` for the full pipeline.
+        """
+        action_result = (result.get("action_result") or {}) if isinstance(result, dict) else {}
+        return self.semantic_verifier.goal_verifier.verify(task, action_result)
 
     async def _emit(self, event_type: str, payload: Dict[str, Any], *, state: Optional[Dict[str, Any]] = None) -> None:
         payload = _jsonable(payload)
-        event = {"type": event_type, "payload": payload}
         if state is not None:
             state["history"].append({"type": event_type, "timestamp": _now(), "payload": payload})
             await self._persist_state(state)
-        await self.emitter(event)
+        await self.event_bus.emit_raw(event_type, payload, source="runtime_manager")
 
     def _graph_executor_for(self, state: Dict[str, Any]) -> Optional[GraphExecutor]:
         return self.operational_layer.graph_executor_for(state.get("_pipeline_graph"))

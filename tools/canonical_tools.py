@@ -26,6 +26,13 @@ SUPPORTED_TOOL_NAMES = [
     "sandbox",
     "artifact",
     "dynamic_tool",
+    "visual",
+    "skill",
+    "codebase_map",
+    "execution_economics",
+    "test_diagnostic",
+    "patch_planner",
+    "heartbeat",
 ]
 
 DEFAULT_ACTION_METADATA: Dict[str, Any] = {
@@ -228,6 +235,79 @@ ACTION_METADATA: Dict[str, Dict[str, Any]] = {
         "get": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["tool_id"], "effect_kind": "get_dynamic_tool"},
         "execute": {"semantic_type": "execution", "mutates_state": True, "approval_mode": "single", "target_fields": ["tool_id"], "effect_kind": "execute_dynamic_tool", "reversibility": "none"},
         "delete": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "double", "double_confirm": True, "target_fields": ["tool_id"], "effect_kind": "delete_dynamic_tool", "reversibility": "none"},
+    },
+    "skill": {
+        "register": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["name", "version"], "effect_kind": "register_skill", "reversibility": "unregister"},
+        "update": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["name", "version"], "effect_kind": "update_skill", "reversibility": "rollback_version"},
+        "unregister": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "double", "double_confirm": True, "target_fields": ["name"], "effect_kind": "unregister_skill", "reversibility": "none"},
+        "get": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["name"], "effect_kind": "get_skill"},
+        "list": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "list_skills"},
+        "search": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["query"], "effect_kind": "search_skills"},
+        "execute": {"semantic_type": "execution", "mutates_state": True, "approval_mode": "single", "target_fields": ["name"], "effect_kind": "execute_skill", "reversibility": "none"},
+        "verify": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["name"], "effect_kind": "verify_skill"},
+        "validate_manifest": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "validate_manifest"},
+        "upgrade_dynamic": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["tool_id"], "effect_kind": "upgrade_dynamic_tool", "reversibility": "unregister"},
+    },
+    "visual": {
+        "capture_screen": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "capture_screen"},
+        "capture_window": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["hwnd", "title"], "effect_kind": "capture_window"},
+        "analyze_elements": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "analyze_elements"},
+        "ground_element": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["text", "title", "process_name"], "effect_kind": "ground_element"},
+        "verify_action": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["hwnd", "title"], "effect_kind": "verify_action"},
+        "evaluate_fallback": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["tool", "target_action"], "effect_kind": "evaluate_fallback"},
+    },
+    "codebase_map": {
+        "scan": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["workspace"], "effect_kind": "scan_codebase"},
+        "stats": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "codebase_stats"},
+        "find_symbol": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["name", "kind"], "effect_kind": "find_symbol"},
+        "find_imports": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["module"], "effect_kind": "find_imports"},
+        "find_tests": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["module"], "effect_kind": "find_tests"},
+        "find_routes": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["path_pattern"], "effect_kind": "find_routes"},
+        "find_configs": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["config_type"], "effect_kind": "find_configs"},
+        "find_owners": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["owner"], "effect_kind": "find_owners"},
+        "get_file": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["path"], "effect_kind": "get_file_map"},
+        "dependency_graph": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["path"], "effect_kind": "dependency_graph"},
+        "search": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["query"], "effect_kind": "search_codebase"},
+    },
+    "execution_economics": {
+        "create_tracker": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["run_id", "model"], "effect_kind": "create_cost_tracker"},
+        "record_step": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["run_id", "tool"], "effect_kind": "record_step_cost"},
+        "record_llm_usage": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["run_id"], "effect_kind": "record_llm_usage"},
+        "get_summary": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["run_id"], "effect_kind": "cost_summary"},
+        "check_budget": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["run_id"], "effect_kind": "check_budget"},
+        "analyze_complexity": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "analyze_complexity"},
+        "evaluate_stopping": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["run_id"], "effect_kind": "evaluate_stopping"},
+        "rank_strategies": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "rank_strategies"},
+        "compare_routes": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "compare_routes"},
+        "best_route": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "best_route"},
+    },
+    "test_diagnostic": {
+        "run_and_diagnose": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["target"], "effect_kind": "run_and_diagnose_tests"},
+        "start_session": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["target"], "effect_kind": "start_diagnostic_session"},
+        "iterate": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["session_id"], "effect_kind": "diagnostic_iteration"},
+        "get_session": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["session_id"], "effect_kind": "get_diagnostic_session"},
+    },
+    "patch_planner": {
+        "plan": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "create_patch_plan"},
+        "assess_risk": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "assess_change_risk"},
+        "order_changes": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "order_changes"},
+    },
+    "heartbeat": {
+        "start_heartbeat": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["tool_name", "run_id"], "effect_kind": "start_heartbeat"},
+        "stop_heartbeat": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["tool_name", "run_id"], "effect_kind": "stop_heartbeat"},
+        "heartbeat_status": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["tool_name", "run_id"], "effect_kind": "heartbeat_status"},
+        "touch": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["tool_name", "run_id"], "effect_kind": "heartbeat_touch"},
+        "start_progress": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["tool_name", "run_id"], "effect_kind": "start_progress"},
+        "update_progress": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["tool_name", "run_id"], "effect_kind": "update_progress"},
+        "complete_progress": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["tool_name", "run_id"], "effect_kind": "complete_progress"},
+        "progress_status": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["tool_name", "run_id"], "effect_kind": "progress_status"},
+        "add_watch_target": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["pid", "hwnd", "process_name"], "effect_kind": "add_watch_target"},
+        "remove_watch_target": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["target_key"], "effect_kind": "remove_watch_target"},
+        "start_watchdog": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "effect_kind": "start_watchdog"},
+        "stop_watchdog": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "effect_kind": "stop_watchdog"},
+        "check_frozen": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["hwnd", "pid", "title_pattern"], "effect_kind": "check_frozen"},
+        "watchdog_status": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "watchdog_status"},
+        "check_once": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "watchdog_check_once"},
     },
 }
 
@@ -777,6 +857,263 @@ def tool_definitions() -> List[Dict[str, Any]]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "skill",
+                "description": "Manage the local skill manifest system. Register, update, query, verify and execute versioned, auditable skills with declared permissions, typed inputs/outputs and risk profiles. Prefer discovering existing skills before creating new dynamic tools.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["register", "update", "unregister", "get", "list", "search", "execute", "verify", "validate_manifest", "upgrade_dynamic"],
+                        },
+                        "name": {"type": "string", "description": "Skill name (lowercase, a-z0-9_.-) for register/update/get/execute/verify"},
+                        "version": {"type": "string", "description": "Semver version (X.Y.Z)"},
+                        "display_name": {"type": "string", "description": "Human-readable name"},
+                        "description": {"type": "string", "description": "What the skill does"},
+                        "author": {"type": "string"},
+                        "language": {"type": "string", "enum": ["python", "powershell"]},
+                        "code": {"type": "string", "description": "Skill source code with a run(params) function"},
+                        "permissions": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Required capabilities (e.g. filesystem:read, shell:run, network:outbound)",
+                        },
+                        "inputs": {
+                            "type": "object",
+                            "description": "Input schema: {params: [{name, type, description, required, default}], description}",
+                        },
+                        "outputs": {
+                            "type": "object",
+                            "description": "Output schema: {params: [{name, type, description}], description}",
+                        },
+                        "risk": {
+                            "type": "object",
+                            "description": "Risk profile: {level, tags, rationale, reversible, side_effects, data_exposure, requires_approval, max_execution_time_seconds}",
+                        },
+                        "tags": {"type": "array", "items": {"type": "string"}, "description": "Domain/category tags"},
+                        "entry_point": {"type": "string", "description": "Function name to call (default: run)"},
+                        "dependencies": {"type": "array", "items": {"type": "string"}, "description": "Python packages required"},
+                        "params": {"type": "object", "description": "Execution parameters (for execute)"},
+                        "timeout": {"type": "integer", "minimum": 1, "maximum": 3600, "description": "Execution timeout in seconds"},
+                        "tag": {"type": "string", "description": "Filter by tag (for list)"},
+                        "permission": {"type": "string", "description": "Filter by permission (for list)"},
+                        "max_risk": {"type": "string", "enum": ["low", "medium", "high", "critical"], "description": "Max risk level filter (for list)"},
+                        "query": {"type": "string", "description": "Search query (for search)"},
+                        "tool_spec": {"type": "object", "description": "DynamicToolSpec dict to upgrade (for upgrade_dynamic)"},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "visual",
+                "description": "Visual perception and hybrid computer-use. Capture screenshots, detect text via OCR, ground visual elements to UIA selectors, verify actions visually (before/after), and evaluate anti-fragility fallback policy. Prefer native APIs — use visual only when UIA/COM/DOM fail.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["capture_screen", "capture_window", "analyze_elements", "ground_element", "verify_action", "evaluate_fallback"],
+                        },
+                        "hwnd": {"type": "integer", "description": "Window handle to target"},
+                        "title": {"type": "string", "description": "Window title to target"},
+                        "process_name": {"type": "string", "description": "Process name for grounding context"},
+                        "region": {"type": "object", "properties": {"left": {"type": "integer"}, "top": {"type": "integer"}, "right": {"type": "integer"}, "bottom": {"type": "integer"}}, "description": "Screen region for capture_screen"},
+                        "text": {"type": "string", "description": "Text to search for (ground_element)"},
+                        "tool": {"type": "string", "description": "Tool name for evaluate_fallback"},
+                        "target_action": {"type": "string", "description": "Action name for evaluate_fallback"},
+                        "native_failed": {"type": "boolean", "description": "Whether the native API path failed"},
+                        "native_error": {"type": "string", "description": "Error from the native API attempt"},
+                        "grounded": {"type": "boolean", "description": "Whether grounding produced a verified element"},
+                        "grounding_score": {"type": "number", "description": "Grounding confidence score (0.0-1.0)"},
+                        "semantic_type": {"type": "string", "description": "Semantic type of the action"},
+                        "mutates_state": {"type": "boolean", "description": "Whether the action mutates state"},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "codebase_map",
+                "description": "Persistent codebase map. Scan a workspace to extract symbols, imports, routes, tests, configs and ownership per file. Query the map to find definitions, dependencies, test coverage and file ownership. Supports incremental updates — only rescans files whose content has changed.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["scan", "stats", "find_symbol", "find_imports", "find_tests",
+                                     "find_routes", "find_configs", "find_owners", "get_file",
+                                     "dependency_graph", "search"],
+                        },
+                        "workspace": {"type": "string", "description": "Workspace root path (defaults to cwd)"},
+                        "name": {"type": "string", "description": "Symbol name to search for"},
+                        "kind": {"type": "string", "description": "Symbol kind filter: class, function, method, constant"},
+                        "module": {"type": "string", "description": "Module name for find_imports or find_tests"},
+                        "path": {"type": "string", "description": "File path for get_file or dependency_graph"},
+                        "path_pattern": {"type": "string", "description": "Route path pattern for find_routes"},
+                        "config_type": {"type": "string", "description": "Config type filter for find_configs"},
+                        "owner": {"type": "string", "description": "Owner name for find_owners"},
+                        "query": {"type": "string", "description": "Search query for unified search"},
+                        "force": {"type": "boolean", "description": "Force full rescan (ignore hashes)"},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "execution_economics",
+                "description": "Execution economics — track cost per run (tokens, time, resources), analyze path complexity (tools and steps per approach), evaluate stopping heuristics (when to ask for help vs. explore further), and optimize route selection (choose the most efficient path based on historical strategy data).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["create_tracker", "record_step", "record_llm_usage",
+                                     "get_summary", "check_budget", "analyze_complexity",
+                                     "evaluate_stopping", "rank_strategies", "compare_routes",
+                                     "best_route"],
+                        },
+                        "run_id": {"type": "string", "description": "Run identifier for cost tracking"},
+                        "model": {"type": "string", "description": "LLM model name for pricing"},
+                        "budget_usd": {"type": "number", "description": "USD budget limit for the run"},
+                        "budget_tokens": {"type": "integer", "description": "Token budget limit for the run"},
+                        "step_index": {"type": "integer", "description": "Step number"},
+                        "tool": {"type": "string", "description": "Tool name for the step"},
+                        "tool_action": {"type": "string", "description": "Action within the tool"},
+                        "status": {"type": "string", "description": "Step outcome: succeeded, failed, retried"},
+                        "prompt_tokens": {"type": "integer", "description": "Input tokens used"},
+                        "completion_tokens": {"type": "integer", "description": "Output tokens used"},
+                        "duration_ms": {"type": "integer", "description": "Step duration in milliseconds"},
+                        "is_retry": {"type": "boolean", "description": "Whether this step is a retry"},
+                        "is_replan": {"type": "boolean", "description": "Whether this step is a replan"},
+                        "error": {"type": "string", "description": "Error message if step failed"},
+                        "current_confidence": {"type": "number", "description": "Current goal confidence (0-1)"},
+                        "goal_progress": {"type": "number", "description": "Progress toward goal (0-1)"},
+                        "consecutive_errors": {"type": "integer", "description": "Number of consecutive errors"},
+                        "strategies": {"type": "array", "items": {"type": "object"}, "description": "Strategy records to rank or select from"},
+                        "route_a": {"type": "object", "description": "First route for comparison"},
+                        "route_b": {"type": "object", "description": "Second route for comparison"},
+                        "steps": {"type": "array", "items": {"type": "object"}, "description": "Step records for complexity analysis"},
+                        "branch_count": {"type": "integer", "description": "Number of parallel branches"},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "test_diagnostic",
+                "description": "Test diagnostic loop — run tests, interpret failures (extract error type, source location, root cause), suggest fixes, rerun to verify, and expand to regression tests. Supports pytest, jest and unittest.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["run_and_diagnose", "start_session", "iterate", "get_session"],
+                        },
+                        "workspace": {"type": "string", "description": "Workspace root path (defaults to cwd)"},
+                        "target": {"type": "string", "description": "Test target (file, module, or specific test)"},
+                        "framework": {"type": "string", "enum": ["pytest", "jest", "unittest"], "description": "Test framework"},
+                        "extra_args": {"type": "array", "items": {"type": "string"}, "description": "Additional CLI args"},
+                        "session_id": {"type": "string", "description": "Session ID for iterate/get_session"},
+                        "max_iterations": {"type": "integer", "description": "Max diagnostic iterations"},
+                        "test_timeout": {"type": "integer", "description": "Test execution timeout in seconds"},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "patch_planner",
+                "description": "Patch planner — decompose large changes into an ordered, risk-assessed plan. Classifies risk per file (scope, config, ownership, test coverage, dependency fan-out), resolves owners, orders changes topologically by dependency, and groups by reviewer.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["plan", "assess_risk", "order_changes"],
+                        },
+                        "changes": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "change_type": {"type": "string", "enum": ["add", "modify", "delete", "rename"]},
+                                    "description": {"type": "string"},
+                                    "lines_added": {"type": "integer"},
+                                    "lines_removed": {"type": "integer"},
+                                    "language": {"type": "string"},
+                                    "is_test": {"type": "boolean"},
+                                    "is_config": {"type": "boolean"},
+                                },
+                                "required": ["path"],
+                            },
+                            "description": "List of file changes to plan",
+                        },
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "heartbeat",
+                "description": "Heartbeat, incremental progress and process watchdog. Start/stop periodic heartbeats for long-running tools, track multi-phase progress with ETA, and monitor processes/windows for frozen/unresponsive state with automatic recovery (retry message, graceful close, kill, restart).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["start_heartbeat", "stop_heartbeat", "heartbeat_status", "touch",
+                                     "start_progress", "update_progress", "complete_progress", "progress_status",
+                                     "add_watch_target", "remove_watch_target", "start_watchdog", "stop_watchdog",
+                                     "check_frozen", "watchdog_status", "check_once"],
+                        },
+                        "tool_name": {"type": "string", "description": "Tool name for heartbeat/progress tracking"},
+                        "run_id": {"type": "string", "description": "Run identifier"},
+                        "task_id": {"type": "string", "description": "Task identifier"},
+                        "interval": {"type": "number", "description": "Heartbeat interval in seconds"},
+                        "phases": {"type": "array", "items": {"type": "string"}, "description": "Progress phases"},
+                        "phase": {"type": "string", "description": "Current phase name"},
+                        "percent": {"type": "number", "description": "Progress percentage (0-100)"},
+                        "message": {"type": "string", "description": "Progress message"},
+                        "eta_ms": {"type": "integer", "description": "Estimated time remaining in ms"},
+                        "pid": {"type": "integer", "description": "Process ID to watch"},
+                        "hwnd": {"type": "integer", "description": "Window handle to watch"},
+                        "process_name": {"type": "string", "description": "Process name to watch"},
+                        "title_pattern": {"type": "string", "description": "Window title pattern to check"},
+                        "restart_command": {"type": "string", "description": "Command to restart the process"},
+                        "check_interval": {"type": "number", "description": "Watchdog check interval in seconds"},
+                        "freeze_threshold_ms": {"type": "integer", "description": "How long frozen before recovery"},
+                        "max_recovery_attempts": {"type": "integer", "description": "Max recovery attempts"},
+                        "auto_restart": {"type": "boolean", "description": "Auto-restart after kill"},
+                        "target_key": {"type": "string", "description": "Watch target key to remove"},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+            },
+        },
     ]
 
 
@@ -951,6 +1288,26 @@ def task_title(tool: str, action: str, params: Dict[str, Any]) -> str:
     if tool == "dynamic_tool":
         detail = params.get("name") or params.get("tool_id") or ""
         return f"{action.replace('_', ' ').title()} {detail}".strip()
+    if tool == "skill":
+        detail = params.get("name") or params.get("query") or ""
+        return f"Skill {action.replace('_', ' ').title()} {detail}".strip()
+    if tool == "visual":
+        detail = params.get("title") or params.get("text") or params.get("target_action") or ""
+        return f"Visual {action.replace('_', ' ').title()} {detail}".strip()
+    if tool == "codebase_map":
+        detail = params.get("name") or params.get("module") or params.get("query") or params.get("path") or ""
+        return f"Codebase {action.replace('_', ' ').title()} {detail}".strip()
+    if tool == "execution_economics":
+        detail = params.get("run_id") or params.get("tool") or ""
+        return f"Economics {action.replace('_', ' ').title()} {detail}".strip()
+    if tool == "test_diagnostic":
+        detail = params.get("target") or params.get("session_id") or ""
+        return f"Test Diagnostic {action.replace('_', ' ').title()} {detail}".strip()
+    if tool == "patch_planner":
+        return f"Patch {action.replace('_', ' ').title()}"
+    if tool == "heartbeat":
+        detail = params.get("tool_name") or params.get("target_key") or ""
+        return f"Heartbeat {action.replace('_', ' ').title()} {detail}".strip()
     return f"{tool}:{action}"
 
 
@@ -1076,6 +1433,91 @@ def normalize_agentic_task(tool_name: str, arguments: Dict[str, Any], task_id: s
             key: value
             for key, value in arguments.items()
             if key in {"name", "description", "code", "language", "tool_id", "params", "tags", "tag", "timeout"}
+            and value is not None
+        }
+    elif tool_name == "skill":
+        action = arguments.get("action")
+        params = {
+            key: value
+            for key, value in arguments.items()
+            if key in {
+                "name", "version", "display_name", "description", "author",
+                "language", "code", "permissions", "inputs", "outputs",
+                "risk", "tags", "entry_point", "dependencies",
+                "params", "timeout", "tag", "permission", "max_risk",
+                "query", "tool_id", "tool_spec",
+            }
+            and value is not None
+        }
+    elif tool_name == "visual":
+        action = arguments.get("action")
+        params = {
+            key: value
+            for key, value in arguments.items()
+            if key in {
+                "hwnd", "title", "process_name", "region", "text",
+                "tool", "target_action", "native_failed", "native_error",
+                "grounded", "grounding_score", "semantic_type", "mutates_state",
+            }
+            and value is not None
+        }
+    elif tool_name == "codebase_map":
+        action = arguments.get("action")
+        params = {
+            key: value
+            for key, value in arguments.items()
+            if key in {
+                "workspace", "name", "kind", "module", "path",
+                "path_pattern", "config_type", "owner", "query", "force",
+            }
+            and value is not None
+        }
+    elif tool_name == "execution_economics":
+        action = arguments.get("action")
+        params = {
+            key: value
+            for key, value in arguments.items()
+            if key in {
+                "run_id", "model", "budget_usd", "budget_tokens",
+                "step_index", "tool", "tool_action", "status",
+                "prompt_tokens", "completion_tokens", "duration_ms",
+                "is_retry", "is_replan", "error",
+                "current_confidence", "goal_progress", "consecutive_errors",
+                "strategies", "route_a", "route_b", "steps", "branch_count",
+            }
+            and value is not None
+        }
+    elif tool_name == "test_diagnostic":
+        action = arguments.get("action")
+        params = {
+            key: value
+            for key, value in arguments.items()
+            if key in {
+                "workspace", "target", "framework", "extra_args",
+                "session_id", "max_iterations", "test_timeout",
+            }
+            and value is not None
+        }
+    elif tool_name == "patch_planner":
+        action = arguments.get("action")
+        params = {
+            key: value
+            for key, value in arguments.items()
+            if key in {"changes"}
+            and value is not None
+        }
+    elif tool_name == "heartbeat":
+        action = arguments.get("action")
+        params = {
+            key: value
+            for key, value in arguments.items()
+            if key in {
+                "tool_name", "run_id", "task_id", "interval", "phases", "phase",
+                "percent", "message", "eta_ms", "pid", "hwnd", "process_name",
+                "title_pattern", "restart_command", "check_interval",
+                "freeze_threshold_ms", "max_recovery_attempts", "auto_restart",
+                "target_key",
+            }
             and value is not None
         }
     else:

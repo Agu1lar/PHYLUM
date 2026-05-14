@@ -111,6 +111,16 @@ class RecoveryEngine:
                 "recommended_followups": ["share_discovery.inspect_share", "filesystem.stat"],
             })
 
+        if issue_kind in {"missing_input"}:
+            return self._attach_target_node({
+                "classification": "needs_user",
+                "retryable": False,
+                "needs_user": True,
+                "suggested_action": "ask_user",
+                "reason": issue_message or "action requires additional input from the user",
+                "recommended_followups": [],
+            })
+
         if issue_kind in {"office_com_unavailable", "browser_native_bridge_required"}:
             return self._attach_target_node({
                 "classification": "replan_required",
@@ -232,6 +242,32 @@ class RecoveryEngine:
         })
 
     def question_for_failure(self, task: Dict[str, Any], error: str) -> Dict[str, Any]:
+        tool = str(task.get("tool") or "")
+        action = str(task.get("action") or "")
+        params = task.get("params") or {}
+        if tool == "driver_manager" and action in {"printer_status", "printer_driver_info"}:
+            target = params.get("printer_name") or params.get("query") or params.get("device_id")
+            if target:
+                prompt = (
+                    f"Nao consegui verificar a impressora '{target}'. "
+                    "Confirme o nome exibido da impressora, o IP ou o caminho compartilhado."
+                )
+            else:
+                prompt = (
+                    "Me informe o nome exibido da impressora, o IP ou o caminho compartilhado "
+                    "para que eu possa localiza-la na rede."
+                )
+            return {
+                "kind": "recovery_question",
+                "title": "Preciso identificar a impressora",
+                "prompt": prompt,
+                "allow_free_text": True,
+                "options": [
+                    {"id": "provide_input", "label": "Vou informar os dados", "value": "clarify"},
+                    {"id": "abort", "label": "Abortar esta run", "value": "abort"},
+                ],
+            }
+
         issue = (((task.get("result") or {}).get("action_result") or {}).get("issue") or {})
         candidates = issue.get("candidates") or []
         missing_fields = issue.get("missing_fields") or []

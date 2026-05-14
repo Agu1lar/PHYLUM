@@ -79,9 +79,9 @@ class PolicyEngine:
 
         approval_mode = metadata.get("approval_mode", "none")
         requires_approval = approval_mode != "none"
+        outside_sandbox = []
 
         if tool == "filesystem":
-            outside_sandbox = []
             path = params.get("path")
             dest = params.get("dest")
             if path and not is_allowed_path_for_action(path, action):
@@ -103,7 +103,8 @@ class PolicyEngine:
                 verdict["risk"] = risk
 
         if runtime_mode != "agentic" and not metadata.get("mutates_state") and tool != "shell":
-            requires_approval = False
+            if not (tool == "filesystem" and outside_sandbox):
+                requires_approval = False
 
         if tool == "shell":
             command = params.get("command", "")
