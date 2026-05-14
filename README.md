@@ -59,6 +59,7 @@ Todo o ciclo e executado como um **grafo de estados dirigido** com 13 tipos de n
 Estas capacidades sairam do roadmap e fazem parte da base atual do PHYLUM:
 
 - **State Graph com DAG de subtarefas**: o pipeline e dirigido por grafo de estados e, dentro do runtime local, subtarefas usam dependency graph real por `depends_on`, com deteccao de ciclos, branches paralelos, execucao especulativa segura para reads e partial completion.
+- **Separacao reasoning/execution em camadas**: `CognitiveLayer` concentra planejamento, LLM loop e decisao de estrategia; `OperationalLayer` concentra task graph, recovery e graph executors; `ExecutionLayer` executa tools, safety, reflection e automacao desktop; `StateLayer` concentra persistencia, World Model, Strategy Memory, fila duravel e sessoes.
 - **Parallel tool calls**: quando o LLM emite multiplas tool calls independentes no mesmo turn, o agentic loop executa em paralelo via `asyncio.gather`, preservando a ordem original dos resultados no message history.
 - **Sub-agentes paralelos**: `subagent.run_parallel_branches` cria branches isolados com objetivo especifico, budget proprio de steps/timeout/tools/tokens/custo, merge de resultados e cancelamento em cascata quando um branch satisfaz o objetivo.
 - **Extended thinking Anthropic**: modelos Claude com thinking recebem `thinking: adaptive`, timeout estendido, persistencia de thinking blocks e eventos `agent_thinking` para observabilidade.
@@ -409,15 +410,6 @@ O sistema ja e implicitamente event-driven (retries, replanning, handoffs, appro
 - [ ] State transitions como eventos first-class
 - [ ] Novos consumers sem modificar producers
 
-#### Separacao reasoning / execution
-
-Hoje reasoning e execution estao relativamente acoplados. A arquitetura alvo:
-
-- [ ] **Cognitive layer**: planejamento, raciocinio, decisao de estrategia
-- [ ] **Operational layer**: orquestracao de tasks, retry, recovery
-- [ ] **Execution layer**: execucao real de tools, sandbox, UI automation
-- [ ] **State layer**: persistencia, world model, strategy memory
-
 #### Hardening do sandbox
 
 Execucao dinamica de Python/PowerShell em ambiente agentico exige protecoes robustas:
@@ -569,6 +561,37 @@ em vez de validar depois e desperdicar steps:
 - [ ] Pre-validacao client-side dos argumentos antes de aceitar o tool call
 - [ ] Template de argumentos obrigatorios injetado no prompt por tool
 - [ ] Metricas de compliance por tool (quais tools o LLM mais erra)
+
+---
+
+## Manifesto PHYLUM: A Alianca pela Soberania Digital
+
+### 1. O Codigo e o Destino, a Propriedade e sua.
+
+Acreditamos que a inteligencia artificial nao deve ser um cercado murado controlado por poucos. Se a IA vai gerir nossas vidas digitais, ela deve ser auditavel, local e livre. O PHYLUM e o seu territorio soberano dentro do Windows.
+
+### 2. Privacidade nao e um Ajuste, e o Padrao.
+
+Dados sao a extensao da mente humana. No PHYLUM, o processamento e local-first. Seus documentos, senhas e rotinas nunca alimentam modelos de terceiros. A privacidade e protegida pela fisica do seu hardware, nao por termos de servico mutaveis.
+
+### 3. Inteligencia Coletiva via P2P.
+
+Nenhum usuario deve ensinar a mesma coisa a maquina duas vezes. Criamos um Sistema Imunologico Digital onde cada descoberta de automacao e cada correcao de seletor e compartilhada de forma anonima e descentralizada. Se um PHYLUM aprende, todos os PHYLUMs evoluem.
+
+### 4. A Economia da Colaboracao (DePIN).
+
+O processamento de IA e o petroleo do seculo XXI. Atraves do PHYLUM, transformamos hardware ocioso em ativos. Ao fornecer poder computacional para a rede, voce e recompensado. O objetivo e uma rede auto-sustentavel onde a automacao de alta performance se paga, democratizando o acesso a modelos de ponta sem depender de cartoes de credito ou assinaturas abusivas.
+
+### 5. Fim do Silo, Inicio da Orquestracao.
+
+Nao aceitamos ser refens de ecossistemas fechados. O PHYLUM nasceu para ser o tradutor universal entre softwares, APIs e intencoes humanas. Se existe uma ferramenta, o PHYLUM deve saber opera-la. Se nao existe, o PHYLUM deve saber cria-la.
+
+### Pilares do Futuro (Roadmap de Descentralizacao)
+
+- **Global Strategy Mesh**: banco de dados P2P de grafos de execucao e Strategy Records validados por reputacao.
+- **Neural Marketplace**: troca descentralizada de tokens por inferencia. Forneca VRAM, receba tokens; use tokens para acessar modelos que seu hardware local nao suporta.
+- **Privacy-Safe Learning**: protocolos de conhecimento que compartilham a logica da tarefa sem expor o conteudo dos dados.
+- **Anti-Fragile Governance**: um sistema onde a evolucao do codigo e das ferramentas e ditada pelo sucesso real na maquina dos usuarios, nao pelo lucro de acionistas.
 
 ---
 

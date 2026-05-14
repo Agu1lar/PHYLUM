@@ -109,12 +109,10 @@ class ActionExecutor:
                 await self.runtime._restore_execution_context(state, task)
                 await self.runtime._emit("task_started", {"request_id": state["request_id"], "task": task}, state=state)
                 self.runtime._raise_if_cancelled(state)
-                result = await self.runtime.tool_router.execute(
-                    {
-                        "inputs": state["inputs"],
-                        "current_task": task,
-                        "cancel_event": self.runtime._cancel_event_for(state["request_id"]),
-                    }
+                result = await self.runtime.execution_layer.execute_tool(
+                    inputs=state["inputs"],
+                    task=task,
+                    cancel_event=self.runtime._cancel_event_for(state["request_id"]),
                 )
                 goal_verification = self.runtime._verify_task_goal(task, result)
                 action_result = result.get("action_result") or {}
@@ -334,11 +332,11 @@ class ActionExecutor:
             recovery_task["attempt"] = 1
             recovery_task["status"] = "running"
             state["tasks"].append(recovery_task)
-            result = await self.runtime.tool_router.execute({
-                "inputs": state["inputs"],
-                "current_task": recovery_task,
-                "cancel_event": self.runtime._cancel_event_for(state["request_id"]),
-            })
+            result = await self.runtime.execution_layer.execute_tool(
+                inputs=state["inputs"],
+                task=recovery_task,
+                cancel_event=self.runtime._cancel_event_for(state["request_id"]),
+            )
             action_result = result.get("action_result") or {}
             action_status = action_result.get("status", "failed")
             recovery_task["result"] = result

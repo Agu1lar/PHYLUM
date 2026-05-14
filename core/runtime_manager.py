@@ -36,6 +36,7 @@ from semantic_index import SemanticIndex
 from session_manager import SessionManager
 from state_graph import GraphExecutor, NodeType
 from task_graph import TaskGraphScheduler, SUCCESS_STATUSES
+from runtime_layers import CognitiveLayer, ExecutionLayer, OperationalLayer, StateLayer
 
 logger = logging.getLogger(__name__)
 
@@ -74,30 +75,49 @@ class RuntimeManager:
         credential_store: Optional[CredentialStore] = None,
         provider_client: Optional[MultiProviderClient] = None,
     ):
-        self.persistence = Persistence.get()
         self.emitter = emitter
-        self.credential_store = credential_store or CredentialStore(self.persistence)
+        self.persistence = Persistence.get()
         self.provider_client = provider_client or MultiProviderClient()
-        self.planner = PlannerAgent(supported_tools=canonical_supported_tools())
-        self.safety = SafetyNode("safety")
-        self.tool_router = ToolRouterNode("tool_router")
-        self.reflection = ReflectionNode("reflection")
-        self.recovery_engine = RecoveryEngine()
-        self.action_executor = ActionExecutor(self)
-        self.desktop_agent = DesktopWindowsAgent()
-        self.semantic_index = SemanticIndex()
-        self.world_model = WorldModel(self.persistence, semantic_index=self.semantic_index)
-        self._wire_world_model_to_ui_tool()
-        self.strategy_memory = StrategyMemory(self.persistence, semantic_index=self.semantic_index)
-        self.goal_queue = DurableQueue(self.persistence)
-        self.session_manager = SessionManager(self.persistence)
-        self.execution_strategy = ExecutionStrategy()
-        self.agentic_loop = AgenticLoop(
-            client=self.provider_client,
-            safety=self.safety,
-            tool_router=self.tool_router,
-            reflection=self.reflection,
+
+        state_credential_store = credential_store or CredentialStore(self.persistence)
+        self.state_layer = StateLayer.build(self.persistence, credential_store=state_credential_store)
+        self.execution_layer = ExecutionLayer(
+            safety=SafetyNode("safety"),
+            tool_router=ToolRouterNode("tool_router"),
+            reflection=ReflectionNode("reflection"),
+            desktop_agent=DesktopWindowsAgent(),
         )
+        agentic_loop = AgenticLoop(
+            client=self.provider_client,
+            safety=self.execution_layer.safety,
+            tool_router=self.execution_layer.tool_router,
+            reflection=self.execution_layer.reflection,
+        )
+        self.cognitive_layer = CognitiveLayer(
+            planner=PlannerAgent(supported_tools=canonical_supported_tools()),
+            agentic_loop=agentic_loop,
+            execution_strategy=ExecutionStrategy(),
+        )
+        self.operational_layer = OperationalLayer.build()
+
+        # Backward-compatible aliases for existing runtime code and tests.
+        self.credential_store = self.state_layer.credential_store
+        self.semantic_index = self.state_layer.semantic_index
+        self.world_model = self.state_layer.world_model
+        self.strategy_memory = self.state_layer.strategy_memory
+        self.goal_queue = self.state_layer.goal_queue
+        self.session_manager = self.state_layer.session_manager
+        self.safety = self.execution_layer.safety
+        self.tool_router = self.execution_layer.tool_router
+        self.reflection = self.execution_layer.reflection
+        self.desktop_agent = self.execution_layer.desktop_agent
+        self.planner = self.cognitive_layer.planner
+        self.agentic_loop = self.cognitive_layer.agentic_loop
+        self.execution_strategy = self.cognitive_layer.execution_strategy
+        self.recovery_engine = self.operational_layer.recovery_engine
+        self._wire_world_model_to_ui_tool()
+        self.action_executor = ActionExecutor(self)
+
         self.active_runs: Dict[str, Dict[str, Any]] = {}
         self.run_tasks: Dict[str, asyncio.Task] = {}
         self.run_cancel_events: Dict[str, asyncio.Event] = {}
@@ -106,18 +126,16 @@ class RuntimeManager:
         self._daemon_task: Optional[asyncio.Task] = None
         self._daemon_running = False
 
-        self._local_graph = build_local_graph()
-        self._agentic_graph = build_agentic_graph()
-        self._manual_graph = build_manual_graph()
-        self._local_executor = GraphExecutor(self._local_graph)
-        self._agentic_executor = GraphExecutor(self._agentic_graph)
-        self._manual_executor = GraphExecutor(self._manual_graph)
+        self._local_graph = self.operational_layer.local_graph
+        self._agentic_graph = self.operational_layer.agentic_graph
+        self._manual_graph = self.operational_layer.manual_graph
+        self._local_executor = self.operational_layer.local_executor
+        self._agentic_executor = self.operational_layer.agentic_executor
+        self._manual_executor = self.operational_layer.manual_executor
 
     def _wire_world_model_to_ui_tool(self) -> None:
         """Connect the World Model to the WindowsUiTool for selector healing."""
-        ui_tool = self.tool_router.tools.get("windows_ui")
-        if ui_tool is not None and hasattr(ui_tool, "set_world_model"):
-            ui_tool.set_world_model(self.world_model)
+        self.execution_layer.wire_world_model(self.world_model)
 
     async def submit_run(
         self,
@@ -872,7 +890,7 @@ class RuntimeManager:
             return
         if not state.get("tasks"):
             state["tasks"] = tasks
-        scheduler = TaskGraphScheduler(
+        scheduler = self.operational_layer.task_scheduler(
             state["tasks"],
             max_parallel=int(state.get("inputs", {}).get("max_parallel_tasks") or 4),
         )
@@ -974,7 +992,7 @@ class RuntimeManager:
             await self._run_manual_assist_pipeline(state, reason="no provider configured for API-first mode")
             return
         provider_config = await self.credential_store.resolve_runtime_config(provider, model=state.get("model"))
-        result = await self.agentic_loop.run(
+        result = await self.cognitive_layer.agentic_loop.run(
             state=state,
             provider_config=provider_config,
             emit=lambda event_type, payload: self._emit(event_type, payload, state=state),
@@ -1246,7 +1264,7 @@ class RuntimeManager:
 
     async def _persist_state(self, state: Dict[str, Any]) -> None:
         state["last_updated"] = _now()
-        await self.persistence.save_kv(f"state:{state['request_id']}", _jsonable(state))
+        await self.state_layer.save_run_state(state, _jsonable)
 
     def _autonomy_state(self, state: Dict[str, Any]) -> Dict[str, Any]:
         return state.setdefault(
@@ -1453,14 +1471,7 @@ class RuntimeManager:
         await self.emitter(event)
 
     def _graph_executor_for(self, state: Dict[str, Any]) -> Optional[GraphExecutor]:
-        name = state.get("_pipeline_graph")
-        if name == "local_heuristic":
-            return self._local_executor
-        if name == "agentic":
-            return self._agentic_executor
-        if name == "manual_assist":
-            return self._manual_executor
-        return None
+        return self.operational_layer.graph_executor_for(state.get("_pipeline_graph"))
 
     async def _execute_task_with_recovery(self, state: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
         graph_exec = self._graph_executor_for(state)
@@ -1482,7 +1493,7 @@ class RuntimeManager:
         inputs = state["inputs"]
         text = inputs.get("text") or inputs.get("prompt")
         if text:
-            plan, validation = await self.planner.parse(text)
+            plan, validation = await self.cognitive_layer.parse_plan(text)
             if not validation.ok:
                 return self._handle_non_actionable_input(text, validation)
             return {
@@ -1540,7 +1551,7 @@ class RuntimeManager:
         action = task.get("action", "")
         params = task.get("params") or {}
 
-        decision = self.execution_strategy.decide_execution_mode(
+        decision = self.cognitive_layer.decide_execution_mode(
             tool=tool, action=action, params=params,
             available_tools=list(canonical_supported_tools()),
         )
