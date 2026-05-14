@@ -35,6 +35,7 @@ from graph_definitions import build_agentic_graph, build_local_graph, build_manu
 from semantic_index import SemanticIndex
 from session_manager import SessionManager
 from state_graph import GraphExecutor, NodeType
+from task_graph import TaskGraphScheduler, SUCCESS_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -871,19 +872,86 @@ class RuntimeManager:
             return
         if not state.get("tasks"):
             state["tasks"] = tasks
-        for task in state["tasks"]:
-            if task.get("status") == "completed":
-                continue
-            if task.get("status") == "manual_step":
-                task["status"] = "pending"
-            await self._emit("task_planned", {"request_id": state["request_id"], "task": task}, state=state)
-            await self._execute_task_with_recovery(state, task)
+        scheduler = TaskGraphScheduler(
+            state["tasks"],
+            max_parallel=int(state.get("inputs", {}).get("max_parallel_tasks") or 4),
+        )
+        scheduler.prepare()
+        state["task_graph"] = scheduler.snapshot()
+        await self._emit(
+            "task_graph_built",
+            {"request_id": state["request_id"], "task_graph": state["task_graph"]},
+            state=state,
+        )
+
+        planned_ids = set()
+        while not scheduler.all_done():
+            self._raise_if_cancelled(state)
+            batch = scheduler.next_batch()
+            state["task_graph"] = scheduler.snapshot()
+            if not batch:
+                break
+
+            for task in batch:
+                if task["id"] not in planned_ids:
+                    planned_ids.add(task["id"])
+                    await self._emit("task_planned", {"request_id": state["request_id"], "task": task}, state=state)
+
+            if len(batch) > 1:
+                await self._emit(
+                    "task_branch_batch_started",
+                    {
+                        "request_id": state["request_id"],
+                        "task_ids": [task["id"] for task in batch],
+                        "speculative_task_ids": [task["id"] for task in batch if task.get("speculative")],
+                    },
+                    state=state,
+                )
+
+                async def _exec_branch(task):
+                    try:
+                        return task, await self._execute_task_with_recovery(state, task)
+                    except RunPausedError:
+                        raise
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        return task, {"_error": str(exc)}
+
+                results = await asyncio.gather(*[_exec_branch(task) for task in batch], return_exceptions=True)
+                for item in results:
+                    if isinstance(item, RunPausedError):
+                        raise item
+                    if isinstance(item, asyncio.CancelledError):
+                        raise item
+                    if isinstance(item, BaseException):
+                        raise item
+                await self._emit(
+                    "task_branch_batch_finished",
+                    {
+                        "request_id": state["request_id"],
+                        "task_ids": [task["id"] for task in batch],
+                        "task_graph": scheduler.snapshot(),
+                    },
+                    state=state,
+                )
+            else:
+                await self._execute_task_with_recovery(state, batch[0])
+
+            scheduler.resolve_alternative_branches()
+            scheduler.mark_blocked_by_failed_dependencies()
+            state["task_graph"] = scheduler.snapshot()
 
         status_counts: Dict[str, int] = {}
         for task in state["tasks"]:
             status_counts[task["status"]] = status_counts.get(task["status"], 0) + 1
+        completed_or_partial = [
+            task["id"] for task in state["tasks"] if task.get("status") in SUCCESS_STATUSES
+        ]
         if set(status_counts.keys()) == {"completed"}:
             summary = f"Completed {len(state['tasks'])} task(s)"
+        elif scheduler.can_finish_partially():
+            summary = "Finished local execution with partial completion and usable intermediate results."
         else:
             summary = "Finished local execution with mixed task outcomes."
         await self._complete_run(
@@ -891,7 +959,10 @@ class RuntimeManager:
             summary=summary,
             details={
                 "completed_tasks": [task["id"] for task in state["tasks"] if task.get("status") == "completed"],
+                "partial_tasks": [task["id"] for task in state["tasks"] if task.get("status") == "partial"],
+                "usable_result_tasks": completed_or_partial,
                 "task_status_counts": status_counts,
+                "task_graph": scheduler.snapshot(),
                 "execution_mode": "local_heuristic",
             },
             current_node="reflection",

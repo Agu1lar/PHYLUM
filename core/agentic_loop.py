@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from canonical_tools import agentic_tool_definitions, to_openai_tool_call
@@ -161,8 +162,55 @@ class AgenticLoop:
                     tc for tc in turn.tool_calls if tc.name != "request_user_input"
                 ]
 
+                subagent_calls = [tc for tc in executable_calls if tc.name == "subagent"]
+                regular_calls = [tc for tc in executable_calls if tc.name != "subagent"]
+
+                if subagent_calls:
+                    await emit(
+                        "agent_step",
+                        {
+                            "request_id": state["request_id"],
+                            "step": step,
+                            "summary": f"Spawning {len(subagent_calls)} sub-agent branch group(s)",
+                        },
+                    )
+                    subagent_results: Dict[str, Dict[str, Any]] = {}
+                    for tool_call in subagent_calls:
+                        subagent_results[tool_call.id] = await self._execute_subagent_tool_call(
+                            tool_call=tool_call,
+                            state=state,
+                            provider_config=provider_config,
+                            tools_for_provider=tools_for_provider,
+                            emit=emit,
+                            task_factory=task_factory,
+                            execute_task=execute_task,
+                            cancel_event=cancel_event,
+                        )
+                    for tool_call in subagent_calls:
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": json.dumps(subagent_results[tool_call.id], default=str),
+                            }
+                        )
+                        if checkpoint is not None:
+                            await checkpoint(
+                                {
+                                    "messages": messages,
+                                    "step": step,
+                                    "observation": {
+                                        "kind": "subagent_merge",
+                                        "tool_call_id": tool_call.id,
+                                        "result": subagent_results[tool_call.id],
+                                    },
+                                }
+                            )
+                    if not regular_calls:
+                        continue
+
                 planned: List[tuple] = []
-                for tool_call in executable_calls:
+                for tool_call in regular_calls:
                     task = task_factory(tool_call.name, tool_call.arguments, step)
                     state["tasks"].append(task)
                     await emit("task_planned", {"request_id": state["request_id"], "task": task})
@@ -294,6 +342,333 @@ class AgenticLoop:
             raise asyncio.CancelledError()
         return await execute_task(state, task)
 
+    async def _execute_subagent_tool_call(
+        self,
+        *,
+        tool_call,
+        state: Dict[str, Any],
+        provider_config: Dict[str, Any],
+        tools_for_provider: List[Dict[str, Any]],
+        emit: EmitFn,
+        task_factory: TaskFactory,
+        execute_task: TaskExecuteFn,
+        cancel_event,
+    ) -> Dict[str, Any]:
+        args = tool_call.arguments or {}
+        if args.get("action") != "run_parallel_branches":
+            return {"status": "failed", "error": "unsupported subagent action"}
+        branches = args.get("branches") or []
+        if not isinstance(branches, list) or not branches:
+            return {"status": "failed", "error": "subagent branches are required"}
+
+        overall_budget = self._normalize_subagent_budget(args.get("budget") or {})
+        stop_on_first_success = bool(args.get("stop_on_first_success", False))
+        group_cancel = asyncio.Event()
+        started_at = time.monotonic()
+
+        async def _watch_parent_cancel():
+            await cancel_event.wait()
+            group_cancel.set()
+
+        watcher = asyncio.create_task(_watch_parent_cancel())
+
+        async def _run_one(index: int, branch: Dict[str, Any]) -> Dict[str, Any]:
+            branch_id = str(branch.get("id") or f"branch-{index + 1}")
+            branch_budget = self._normalize_subagent_budget(branch.get("budget") or {}, defaults=overall_budget)
+            await emit(
+                "subagent_started",
+                {
+                    "request_id": state["request_id"],
+                    "parent_tool_call_id": tool_call.id,
+                    "branch_id": branch_id,
+                    "objective": branch.get("objective"),
+                    "budget": branch_budget,
+                },
+            )
+            try:
+                result = await asyncio.wait_for(
+                    self._run_subagent_branch(
+                        branch_id=branch_id,
+                        branch=branch,
+                        parent_state=state,
+                        provider_config=provider_config,
+                        tools_for_provider=self._tools_without_subagent(tools_for_provider),
+                        budget=branch_budget,
+                        task_factory=task_factory,
+                        execute_task=execute_task,
+                        parent_cancel_event=cancel_event,
+                        group_cancel_event=group_cancel,
+                    ),
+                    timeout=branch_budget["timeout_seconds"],
+                )
+                if stop_on_first_success and result.get("objective_satisfied"):
+                    group_cancel.set()
+                await emit(
+                    "subagent_completed",
+                    {
+                        "request_id": state["request_id"],
+                        "parent_tool_call_id": tool_call.id,
+                        "branch_id": branch_id,
+                        "status": result.get("status"),
+                        "objective_satisfied": result.get("objective_satisfied", False),
+                    },
+                )
+                return result
+            except asyncio.TimeoutError:
+                return {
+                    "branch_id": branch_id,
+                    "status": "timeout",
+                    "objective": branch.get("objective"),
+                    "error": f"sub-agent exceeded timeout_seconds={branch_budget['timeout_seconds']}",
+                    "budget": branch_budget,
+                }
+            except asyncio.CancelledError:
+                return {
+                    "branch_id": branch_id,
+                    "status": "cancelled",
+                    "objective": branch.get("objective"),
+                    "error": "sub-agent cancelled",
+                    "budget": branch_budget,
+                }
+            except Exception as exc:
+                return {
+                    "branch_id": branch_id,
+                    "status": "failed",
+                    "objective": branch.get("objective"),
+                    "error": f"{exc.__class__.__name__}: {exc}",
+                    "budget": branch_budget,
+                }
+
+        tasks = [asyncio.create_task(_run_one(index, branch)) for index, branch in enumerate(branches)]
+        task_branch_ids = {
+            task: str(branch.get("id") or f"branch-{index + 1}")
+            for index, (task, branch) in enumerate(zip(tasks, branches))
+        }
+        try:
+            if stop_on_first_success:
+                results = []
+                pending = set(tasks)
+                while pending:
+                    done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                    completed_results = []
+                    for completed_task in done:
+                        try:
+                            completed_results.append(await completed_task)
+                        except asyncio.CancelledError:
+                            completed_results.append(
+                                {
+                                    "branch_id": task_branch_ids.get(completed_task, "cancelled"),
+                                    "status": "cancelled",
+                                    "error": "sub-agent cancelled",
+                                }
+                            )
+                    results.extend(completed_results)
+                    if any(result.get("objective_satisfied") for result in completed_results):
+                        group_cancel.set()
+                        for pending_task in pending:
+                            pending_task.cancel()
+                        cancelled_results = await asyncio.gather(*pending, return_exceptions=True)
+                        for index, item in enumerate(cancelled_results):
+                            if isinstance(item, dict):
+                                results.append(item)
+                            else:
+                                pending_task = list(pending)[index]
+                                results.append(
+                                    {
+                                        "branch_id": task_branch_ids.get(pending_task, f"cancelled-{index + 1}"),
+                                        "status": "cancelled",
+                                        "error": "cancelled after another branch satisfied the objective",
+                                    }
+                                )
+                        seen_branch_ids = {item.get("branch_id") for item in results}
+                        for branch_id in task_branch_ids.values():
+                            if branch_id not in seen_branch_ids:
+                                results.append(
+                                    {
+                                        "branch_id": branch_id,
+                                        "status": "cancelled",
+                                        "error": "cancelled after another branch satisfied the objective",
+                                    }
+                                )
+                        pending = set()
+                        break
+            else:
+                results = await asyncio.gather(*tasks)
+        finally:
+            watcher.cancel()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+
+        merged = self._merge_subagent_results(results)
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        return {
+            "status": "succeeded",
+            "action": "run_parallel_branches",
+            "objective": args.get("objective"),
+            "branches": results,
+            "merged": merged,
+            "budget": overall_budget,
+            "elapsed_ms": elapsed_ms,
+            "cancelled_remaining": group_cancel.is_set(),
+        }
+
+    async def _run_subagent_branch(
+        self,
+        *,
+        branch_id: str,
+        branch: Dict[str, Any],
+        parent_state: Dict[str, Any],
+        provider_config: Dict[str, Any],
+        tools_for_provider: List[Dict[str, Any]],
+        budget: Dict[str, Any],
+        task_factory: TaskFactory,
+        execute_task: TaskExecuteFn,
+        parent_cancel_event,
+        group_cancel_event: asyncio.Event,
+    ) -> Dict[str, Any]:
+        started_at = time.monotonic()
+        branch_state: Dict[str, Any] = {
+            "request_id": f"{parent_state['request_id']}:{branch_id}",
+            "parent_request_id": parent_state["request_id"],
+            "inputs": {
+                "text": branch.get("objective") or "",
+                "context": branch.get("context"),
+            },
+            "tasks": [],
+            "outputs": {},
+            "runtime_context": dict(parent_state.get("runtime_context") or {}),
+            "subagent": {"branch_id": branch_id, "objective": branch.get("objective")},
+        }
+        messages: List[Dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": self._subagent_system_prompt(
+                    branch_id=branch_id,
+                    success_criteria=branch.get("success_criteria"),
+                ),
+            },
+            {
+                "role": "user",
+                "content": self._subagent_user_prompt(branch),
+            },
+        ]
+        tool_calls_used = 0
+
+        for step in range(1, budget["max_steps"] + 1):
+            if parent_cancel_event.is_set() or group_cancel_event.is_set():
+                return self._subagent_cancelled_result(branch_id, branch, budget, started_at, step - 1, tool_calls_used)
+
+            budget_error = self._subagent_budget_error(messages, budget)
+            if budget_error:
+                return {
+                    "branch_id": branch_id,
+                    "status": "budget_exceeded",
+                    "objective": branch.get("objective"),
+                    "error": budget_error,
+                    "budget": budget,
+                    "budget_used": self._subagent_budget_used(started_at, step - 1, tool_calls_used, messages, budget),
+                }
+
+            turn = await self.client.complete(
+                provider=provider_config["provider"],
+                api_key=provider_config["api_key"],
+                model=provider_config["model"],
+                messages=self.context_window.compress_if_needed(messages),
+                tools=tools_for_provider,
+                base_url=provider_config.get("base_url"),
+            )
+
+            if turn.tool_calls:
+                if tool_calls_used + len(turn.tool_calls) > budget["max_tool_calls"]:
+                    return {
+                        "branch_id": branch_id,
+                        "status": "budget_exceeded",
+                        "objective": branch.get("objective"),
+                        "error": f"sub-agent exceeded max_tool_calls={budget['max_tool_calls']}",
+                        "budget": budget,
+                        "budget_used": self._subagent_budget_used(started_at, step, tool_calls_used, messages, budget),
+                    }
+                assistant_msg: Dict[str, Any] = {
+                    "role": "assistant",
+                    "content": turn.content or None,
+                    "tool_calls": [to_openai_tool_call(tc.id, tc.name, tc.arguments) for tc in turn.tool_calls],
+                }
+                messages.append(assistant_msg)
+
+                planned = []
+                for tc in turn.tool_calls:
+                    task = task_factory(tc.name, tc.arguments, step)
+                    task["subagent_branch_id"] = branch_id
+                    branch_state["tasks"].append(task)
+                    planned.append((tc, task))
+                independent, dependent = self._partition_by_dependency(planned)
+                results_map: Dict[str, Dict[str, Any]] = {}
+
+                if independent:
+                    async def _exec_one(tc, task):
+                        return tc, await self._execute_task(
+                            state=branch_state,
+                            task=task,
+                            emit=lambda *_args, **_kwargs: None,
+                            cancel_event=parent_cancel_event,
+                            execute_task=execute_task,
+                        )
+
+                    gathered = await asyncio.gather(*[_exec_one(tc, task) for tc, task in independent], return_exceptions=True)
+                    for item in gathered:
+                        if isinstance(item, BaseException):
+                            if isinstance(item, asyncio.CancelledError):
+                                raise item
+                            results_map["__error__"] = {"status": "failed", "error": f"{item.__class__.__name__}: {item}"}
+                            continue
+                        tc, result = item
+                        results_map[tc.id] = result
+
+                for tc, task in dependent:
+                    if parent_cancel_event.is_set() or group_cancel_event.is_set():
+                        return self._subagent_cancelled_result(branch_id, branch, budget, started_at, step, tool_calls_used)
+                    results_map[tc.id] = await self._execute_task(
+                        state=branch_state,
+                        task=task,
+                        emit=lambda *_args, **_kwargs: None,
+                        cancel_event=parent_cancel_event,
+                        execute_task=execute_task,
+                    )
+
+                for tc, _task in planned:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": json.dumps(results_map.get(tc.id, {"status": "failed", "error": "execution skipped"}), default=str),
+                        }
+                    )
+                tool_calls_used += len(turn.tool_calls)
+                continue
+
+            final_text = turn.content or ""
+            return {
+                "branch_id": branch_id,
+                "status": "completed",
+                "objective": branch.get("objective"),
+                "result": final_text,
+                "objective_satisfied": self._detect_objective_satisfied(final_text),
+                "tasks": branch_state["tasks"],
+                "budget": budget,
+                "budget_used": self._subagent_budget_used(started_at, step, tool_calls_used, messages, budget),
+            }
+
+        return {
+            "branch_id": branch_id,
+            "status": "budget_exceeded",
+            "objective": branch.get("objective"),
+            "error": f"sub-agent reached max_steps={budget['max_steps']}",
+            "tasks": branch_state["tasks"],
+            "budget": budget,
+            "budget_used": self._subagent_budget_used(started_at, budget["max_steps"], tool_calls_used, messages, budget),
+        }
+
     def _system_prompt(self) -> str:
         return (
             "You are the agentic runtime for a desktop automation assistant on Windows. "
@@ -341,6 +716,8 @@ class AgenticLoop:
             "Pass input_files to provide data.\n"
             "artifact: load, read, transform and analyze files internally (TXT, CSV, JSON, PDF, DOCX, XLSX, MSG) without opening desktop apps.\n"
             "dynamic_tool: create, persist, and execute reusable micro-tools (Python functions with a run(params) entry point).\n"
+            "subagent: for complex discovery with independent branches, spawn isolated sub-agents in parallel, each with a specific objective and budget. "
+            "Use this when branches like network discovery, driver inventory, and web research can run concurrently; merge their findings before deciding the next action.\n"
             "\n\n"
             "== WORLD MODEL & STRATEGY MEMORY ==\n"
             "Entity types: share, app_path, document_alias, selector, path_candidate, device, web_resource, user_preference, environment. "
@@ -348,6 +725,11 @@ class AgenticLoop:
             "After discovering, persist it: memory.world_remember_share/app/alias/selector/path. "
             "On successful reuse: memory.world_touch with boost_confidence. "
             "Confidence decays 0.05/day — stale knowledge is naturally deprioritized. "
+            "For unfamiliar technical procedures, first query memory.world_query or memory.semantic_search_entities for web_resource. "
+            "If there is no useful cached answer, use web.search_web as an internal learning tool, then fetch/read the strongest sources as needed and apply the learned procedure. "
+            "Prefer official documentation, Microsoft Learn/docs.microsoft.com, StackOverflow/SuperUser/ServerFault, and vendor docs over blogs or SEO pages. "
+            "Treat web results as observations for your own reasoning, not just as material to echo to the user. "
+            "The web tool caches search results as web_resource entities so future similar tasks should reuse memory before re-searching. "
             "For strategies: check memory.strategy_best before complex tasks. Record success/failure after. "
             "Semantic search available: memory.semantic_search_strategies/entities for similarity-based lookup. "
             "\n\n"
@@ -368,6 +750,12 @@ class AgenticLoop:
             "Filesystem fails -> sandbox os/shutil. "
             "Always prefer an alternative script over asking the user.\n"
             "\n\n"
+            "== PARALLEL SUB-AGENTS ==\n"
+            "For complex tasks with independent discovery branches, use subagent.run_parallel_branches. "
+            "Give each branch a narrow objective, context, success criteria, and explicit budget. "
+            "Sub-agents have isolated context and return merged results to you; use those observations to choose and execute the final plan. "
+            "Do not spawn sub-agents for simple linear tasks or branches that depend on each other's outputs. "
+            "\n\n"
             "== DISCOVERY-FIRST APPROACH ==\n"
             "When the target is not fully known, discover it by inspecting the system: "
             "Explorer windows, mapped drives, UNC shares, network devices, installed software, web sources. "
@@ -385,6 +773,160 @@ class AgenticLoop:
             "Treat every tool result as an observation. Replan on failure. "
             "When the goal is achieved, respond concisely with what was done and where results are."
         )
+
+    @staticmethod
+    def _normalize_subagent_budget(
+        budget: Dict[str, Any],
+        *,
+        defaults: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        base = dict(defaults or {
+            "max_steps": 3,
+            "timeout_seconds": 90,
+            "max_tool_calls": 8,
+            "max_context_chars": 24000,
+            "max_estimated_tokens": 6000,
+            "max_cost_usd": 0.0,
+            "estimated_usd_per_1k_tokens": 0.0,
+        })
+        limits = {
+            "max_steps": (1, 8),
+            "timeout_seconds": (5, 300),
+            "max_tool_calls": (0, 20),
+            "max_context_chars": (1000, 120000),
+            "max_estimated_tokens": (250, 30000),
+        }
+        for key, (minimum, maximum) in limits.items():
+            raw = budget.get(key, base[key]) if isinstance(budget, dict) else base[key]
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                value = base[key]
+            base[key] = max(minimum, min(maximum, value))
+        for key in ("max_cost_usd", "estimated_usd_per_1k_tokens"):
+            raw = budget.get(key, base[key]) if isinstance(budget, dict) else base[key]
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                value = float(base[key] or 0.0)
+            base[key] = max(0.0, value)
+        return base
+
+    @staticmethod
+    def _tools_without_subagent(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [tool for tool in tools if (tool.get("function") or {}).get("name") != "subagent"]
+
+    @staticmethod
+    def _messages_char_count(messages: List[Dict[str, Any]]) -> int:
+        return len(json.dumps(messages, default=str))
+
+    @staticmethod
+    def _subagent_budget_error(messages: List[Dict[str, Any]], budget: Dict[str, Any]) -> Optional[str]:
+        chars = AgenticLoop._messages_char_count(messages)
+        estimated_tokens = max(1, chars // 4)
+        if chars > int(budget["max_context_chars"]):
+            return f"sub-agent exceeded max_context_chars={budget['max_context_chars']}"
+        if estimated_tokens > int(budget["max_estimated_tokens"]):
+            return f"sub-agent exceeded max_estimated_tokens={budget['max_estimated_tokens']}"
+        max_cost = float(budget.get("max_cost_usd") or 0.0)
+        rate = float(budget.get("estimated_usd_per_1k_tokens") or 0.0)
+        if max_cost > 0 and rate > 0:
+            estimated_cost = (estimated_tokens / 1000.0) * rate
+            if estimated_cost > max_cost:
+                return f"sub-agent exceeded max_cost_usd={max_cost:.4f}"
+        return None
+
+    @staticmethod
+    def _subagent_system_prompt(*, branch_id: str, success_criteria: Optional[str]) -> str:
+        criteria = success_criteria or "Return concise findings, evidence, blockers, and recommended next action."
+        return (
+            "You are an isolated sub-agent branch inside a larger Windows desktop automation run. "
+            f"Branch id: {branch_id}. "
+            "Work only on your assigned objective. Use tools for discovery when needed. "
+            "Do not ask the user for input unless discovery is impossible. "
+            "Return a concise final answer with findings, evidence, and next action. "
+            "If your result fully satisfies the overall objective, include the exact marker OBJECTIVE_SATISFIED. "
+            f"Success criteria: {criteria}"
+        )
+
+    @staticmethod
+    def _subagent_user_prompt(branch: Dict[str, Any]) -> str:
+        parts = [f"Objective: {branch.get('objective') or ''}"]
+        if branch.get("context"):
+            parts.append(f"Context: {branch['context']}")
+        if branch.get("success_criteria"):
+            parts.append(f"Success criteria: {branch['success_criteria']}")
+        return "\n".join(parts)
+
+    @staticmethod
+    def _detect_objective_satisfied(text: str) -> bool:
+        lowered = (text or "").lower()
+        return "objective_satisfied" in lowered or "objective satisfied" in lowered or "objetivo atingido" in lowered
+
+    @staticmethod
+    def _merge_subagent_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        completed = [item for item in results if item.get("status") == "completed"]
+        failed = [item for item in results if item.get("status") in {"failed", "timeout", "budget_exceeded"}]
+        cancelled = [item for item in results if item.get("status") == "cancelled"]
+        findings = [
+            {
+                "branch_id": item.get("branch_id"),
+                "objective": item.get("objective"),
+                "result": item.get("result"),
+                "status": item.get("status"),
+            }
+            for item in results
+        ]
+        return {
+            "summary": f"{len(completed)} completed, {len(failed)} failed or budget-limited, {len(cancelled)} cancelled",
+            "all_completed": len(completed) == len(results),
+            "objective_satisfied": any(item.get("objective_satisfied") for item in results),
+            "findings": findings,
+        }
+
+    @staticmethod
+    def _subagent_budget_used(
+        started_at: float,
+        steps: int,
+        tool_calls: int,
+        messages: List[Dict[str, Any]],
+        budget: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        chars = AgenticLoop._messages_char_count(messages)
+        estimated_tokens = max(1, chars // 4)
+        rate = float((budget or {}).get("estimated_usd_per_1k_tokens") or 0.0)
+        used = {
+            "steps": int(steps),
+            "tool_calls": int(tool_calls),
+            "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+            "estimated_tokens": estimated_tokens,
+            "context_chars": chars,
+        }
+        if rate > 0:
+            used["estimated_cost_usd"] = round((estimated_tokens / 1000.0) * rate, 6)
+        return used
+
+    def _subagent_cancelled_result(
+        self,
+        branch_id: str,
+        branch: Dict[str, Any],
+        budget: Dict[str, Any],
+        started_at: float,
+        steps: int,
+        tool_calls: int,
+    ) -> Dict[str, Any]:
+        return {
+            "branch_id": branch_id,
+            "status": "cancelled",
+            "objective": branch.get("objective"),
+            "error": "parent or sibling branch cancelled this sub-agent",
+            "budget": budget,
+            "budget_used": {
+                "steps": int(steps),
+                "tool_calls": int(tool_calls),
+                "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+            },
+        }
 
     @staticmethod
     def _partition_by_dependency(

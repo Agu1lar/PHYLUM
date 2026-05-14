@@ -54,6 +54,20 @@ Todo o ciclo e executado como um **grafo de estados dirigido** com 13 tipos de n
 
 ---
 
+## Tecnologias implementadas no runtime
+
+Estas capacidades sairam do roadmap e fazem parte da base atual do PHYLUM:
+
+- **State Graph com DAG de subtarefas**: o pipeline e dirigido por grafo de estados e, dentro do runtime local, subtarefas usam dependency graph real por `depends_on`, com deteccao de ciclos, branches paralelos, execucao especulativa segura para reads e partial completion.
+- **Parallel tool calls**: quando o LLM emite multiplas tool calls independentes no mesmo turn, o agentic loop executa em paralelo via `asyncio.gather`, preservando a ordem original dos resultados no message history.
+- **Sub-agentes paralelos**: `subagent.run_parallel_branches` cria branches isolados com objetivo especifico, budget proprio de steps/timeout/tools/tokens/custo, merge de resultados e cancelamento em cascata quando um branch satisfaz o objetivo.
+- **Extended thinking Anthropic**: modelos Claude com thinking recebem `thinking: adaptive`, timeout estendido, persistencia de thinking blocks e eventos `agent_thinking` para observabilidade.
+- **Context window management**: `ContextWindowManager` comprime tool results antigos, preserva paths/URLs/numeros/status/IDs, mantem janela recente inteira e aplica emergency drop quando necessario.
+- **Web research como discovery autonoma**: o agente usa `web.search_web` como ferramenta interna de aprendizado quando nao sabe uma tecnica, prioriza fontes oficiais/Microsoft Learn/StackOverflow e cacheia resultados como `web_resource` no World Model.
+- **Prompt/tool caching**: system prompt, tool definitions e payloads provider-aware sao cacheados in-process; Anthropic usa `cache_control=ephemeral`.
+
+---
+
 ## Arquitetura
 
 ### Fluxo principal
@@ -431,15 +445,6 @@ Controle economico de execucao para evitar loops caros e exploracao inutil:
 - [ ] Heuristicas de parada (quando pedir ajuda vs. explorar mais)
 - [ ] Otimizacao de rota (escolher caminho mais eficiente)
 
-#### Evolucao do grafo de execucao
-
-O State Graph ja esta implementado. Proximos passos:
-
-- [ ] Dependency graph entre sub-tarefas (nao apenas sequencia)
-- [ ] Branch execution (caminhos alternativos em paralelo)
-- [ ] Speculative execution (iniciar sub-tarefas antes de confirmar necessidade)
-- [ ] Partial completion (concluir parcialmente e prosseguir com resultados intermediarios)
-
 #### Embedding models reais
 
 O semantic index usa feature hashing local (rapido, offline, deterministico). Para buscas mais sofisticadas:
@@ -450,68 +455,71 @@ O semantic index usa feature hashing local (rapido, offline, deterministico). Pa
 
 ### Capacidades avancadas (proximo nivel)
 
-#### Parallel tool calls (batch execution) ✅ Concluido
+#### Percepcao visual e computer-use hibrido
 
-O agentic loop agora executa multiplas tool calls em paralelo quando sao independentes.
-Quando o LLM emite N tool calls em um unico turn, o runtime classifica cada uma como
-independente (read/inspection) ou dependente (mutation/data-flow) e executa as independentes
-via `asyncio.gather`. Resultados sao reordenados na sequencia original para o message history.
+PHYLUM evita pixel automation como caminho primario, mas sistemas de automacao amplos precisam fallback visual quando nao ha API nativa confiavel.
 
-- [x] Suporte a multiplas tool calls por turn do LLM (batch de NormalizedToolCall)
-- [x] Execucao concorrente via asyncio.gather para tools independentes
-- [x] Deteccao de dependencias entre tool calls para ordenar quando necessario
-- [x] Reducao de custo: N tools independentes gastam 1 step em vez de N
+- [ ] Screenshot state model: capturar tela/janela, OCR, elementos visuais, coordenadas e relacao com UIA
+- [ ] Grounding visual: mapear texto/controles detectados por screenshot para seletores `windows_ui`
+- [ ] Fallback controlado de mouse/teclado por coordenadas com bounding boxes verificadas
+- [ ] Verificacao visual pos-acao: comparar antes/depois, detectar modais, spinners, erros e confirmacoes
+- [ ] Replay visual de runs: timeline com screenshots redigidos e anotacoes de acao
+- [ ] Politica anti-fragilidade: preferir API nativa, usar visual apenas quando UIA/COM/DOM falharem
 
-#### Extended thinking (chain-of-thought estruturado)
+#### Biblioteca de skills operacionais
 
-O LLM responde direto com uma tool call sem raciocinio intermediario visivel.
-Habilitar extended thinking (Anthropic) ou chain-of-thought permite ao modelo avaliar opcoes, descartar hipoteses e planejar multi-step antes de agir:
+O projeto ja cria dynamic tools, mas ainda falta uma camada de skills versionadas, auditaveis e reutilizaveis por dominio.
 
-- [x] Ativar `adaptive thinking` na API Anthropic (Sonnet 4.6, Opus 4.6/4.7)
-- [x] Capturar e persistir o reasoning chain para observabilidade (evento `agent_thinking`, checkpoint)
-- [x] Usar o thinking como input para o ReflectionNode (o modelo ja pensou — nao precisa re-avaliar)
-- [x] Preservar thinking blocks em multi-turn para continuidade de raciocinio
-- [x] Timeout adaptativo (120s) para chamadas com thinking ativo
-- [x] Remocao de fallback morto (`SCRIPT_TEMPLATES["read_email_outlook"]`)
+- [ ] Skill manifest local com nome, versao, permissiveis, inputs/outputs e riscos
+- [ ] Skill runner com sandbox e declaracao de capabilities antes da execucao
+- [ ] Skill discovery por objetivo: escolher skills instaladas antes de gerar script novo
+- [ ] Skill signing/checksum e provenance para evitar execucao de codigo alterado sem revisao
+- [ ] Skill evaluation: testes minimos por skill antes de disponibilizar ao agente
+- [ ] Marketplace local/offline: importar/exportar pacotes de skills sem telemetria
 
-#### Context window management (sumarizacao de resultados) — IMPLEMENTADO
+#### Automacao de desenvolvimento no workspace
 
-`ContextWindowManager` (core/context_window.py) comprime automaticamente mensagens antigas antes de cada chamada ao LLM,
-mantendo a conversa dentro do token budget sem perder dados criticos:
+Como o runtime roda acoplado ao workspace local, ele pode virar um operador de engenharia mais forte do que um executor generico de desktop.
 
-- [x] Sumarizar tool results apos consumo (manter resumo, descartar detalhes)
-- [x] Sliding window com prioridade recency (resultados recentes inteiros, antigos resumidos)
-- [x] Token budgeting por step (garantir espaco para o LLM responder — reserve_for_response=8000 tokens)
-- [x] Compressao seletiva: manter dados numericos/paths inteiros, comprimir texto narrativo
+- [ ] Codebase map persistente: simbolos, imports, rotas, testes, configs e ownership por arquivo
+- [ ] Loop diagnostico de testes: rodar teste, interpretar falha, patch, rerodar teste alvo, ampliar regressao
+- [ ] Patch planner: decompor mudancas grandes em arquivos/owners com risco e ordem de aplicacao
+- [ ] Workspace awareness: detectar IDE aberta, branch, venv, task runner, portas dev e processos relacionados
+- [ ] Refactor guardrails: impedir edicoes fora do escopo e detectar alteracoes acidentais em arquivos nao relacionados
+- [ ] Relatorio de engenharia por run: arquivos tocados, comandos executados, testes rodados, riscos restantes
 
-Detalhes da implementacao:
-- **Estimativa de tokens**: heuristica chars/4, aplicada por mensagem incluindo tool_calls e thinking_blocks
-- **Sliding window**: ultimas N tool results (recency_window=4) nunca sao comprimidas
-- **Compressao estruturada**: tool results JSON sao parseados; paths, URLs, numeros, status e IDs preservados; texto narrativo longo truncado com marcador `[compressed]`
-- **Listas grandes**: truncadas para 2-3 primeiros elementos + contagem dos restantes
-- **Emergency drop**: se compressao nao for suficiente, tool results mais antigos sao substituidos por placeholder minimal
-- **Integracao**: `agentic_loop.py` chama `compress_if_needed()` antes de cada `client.complete()`
-- **Testes**: 26 testes dedicados cobrindo estimativa, recency, compressao seletiva, budget e emergency drop
+#### Avaliacao continua de automacao
 
-#### Web research como parte da discovery autonoma
+Sistemas agenticos de automacao precisam medir se melhoram ou pioram ao longo do tempo.
 
-Quando o agente nao sabe como resolver um problema (ex: "como descobrir impressoras na rede local via PowerShell"),
-ele deveria pesquisar na web e aplicar o resultado. Hoje o tool `web.search` existe mas o LLM nao o usa proativamente para aprender:
+- [ ] Golden tasks locais: suite de tarefas representativas com fixtures e expected outcomes
+- [ ] Benchmarks por dominio: Office, filesystem, browser, Windows UI, drivers, documentos e web research
+- [ ] Regression replay: reexecutar runs antigas em modo dry-run para comparar plano, custo e resultado
+- [ ] Score de confianca por tool/action baseado em historico real de sucesso
+- [ ] Metricas de autonomia: steps ate sucesso, handoffs evitaveis, recoveries efetivos, loops interrompidos
+- [ ] Painel de qualidade por versao do runtime/modelo/provider
 
-- [ ] Instrucao explicita no system prompt para usar web.search como ferramenta de aprendizado
-- [ ] Integrar resultados de web search no raciocinio do agente (nao so retornar ao usuario)
-- [ ] Cache de respostas web no World Model (evitar re-pesquisar o mesmo problema)
-- [ ] Filtro de qualidade: preferir docs oficiais, StackOverflow, Microsoft Learn
+#### Observabilidade e controle de sessoes desktop
 
-#### Sub-agentes e execucao paralela de branches
+Para automacao longa, o usuario precisa entender e controlar o que esta acontecendo sem ler logs crus.
 
-Hoje o planner decompoe em fases sequenciais. Para tasks complexas, branches paralelos seriam mais eficientes
-(ex: enquanto um agente investiga a rede, outro checa drivers instalados, outro busca na web):
+- [ ] Timeline visual por run com grafo de tasks, eventos, approvals, retries e screenshots opcionais
+- [ ] Pause/resume granular por task ou branch, nao apenas por run inteira
+- [ ] Dry-run/plan-only com simulacao de efeitos e approvals previstos
+- [ ] Modo shadow: observar acoes do usuario e sugerir automacoes sem executar
+- [ ] Session recorder: transformar uma sequencia manual em skill/script reutilizavel
+- [ ] Redaction layer para screenshots, logs e tool results antes de persistir ou exibir
 
-- [ ] Spawn de sub-agentes com contexto isolado e objetivo especifico
-- [ ] Merge de resultados quando todos os sub-agentes completam
-- [ ] Budget individual por sub-agente (tokens, timeout, custo)
-- [ ] Cancelamento em cascata (se o objetivo geral e atingido, cancelar branches restantes)
+#### Robustez para automacoes longas
+
+Automacoes reais podem durar minutos ou horas e atravessar rede instavel, apps travados e reinicios.
+
+- [ ] Heartbeat por tool longa e progresso incremental padronizado
+- [ ] Watchdog de janela travada/processo sem resposta com recovery especifico
+- [ ] Checkpoint por branch de task graph, incluindo resultados intermediarios grandes
+- [ ] Resume idempotente: evitar repetir mutacoes ja aplicadas apos crash
+- [ ] Rollback plan por task mutante quando houver artefatos ou estado anterior conhecido
+- [ ] Quotas por run: limite de CPU, memoria, arquivos tocados, processos abertos e downloads
 
 #### Retry inteligente com re-inject de erros de validacao
 

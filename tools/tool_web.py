@@ -3,18 +3,34 @@
 # either version 3 of the License, or any later version.
 import hashlib
 import logging
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import quote_plus, urljoin, urlparse
 
 import httpx
 from pydantic import BaseModel, Field
 
 from download_policy import describe_url
+from agent_persistence import Persistence
 from tool_base import BaseTool
+from world_model import WorldModel
 
 logger = logging.getLogger(__name__)
+
+WEB_SEARCH_CACHE_TTL_SECONDS = 86400 * 3
+PREFERRED_WEB_HOSTS = (
+    "learn.microsoft.com",
+    "docs.microsoft.com",
+    "stackoverflow.com",
+    "serverfault.com",
+    "superuser.com",
+)
+PREFERRED_HOST_SUFFIXES = (
+    ".microsoft.com",
+    ".windows.com",
+)
 
 
 class _LinkParser(HTMLParser):
@@ -61,6 +77,10 @@ class WebTool(BaseTool):
     InputModel = WebInput
     OutputModel = WebOutput
 
+    def __init__(self, *, default_timeout: int = 30, default_retries: int = 2, world_model: Optional[WorldModel] = None):
+        super().__init__(default_timeout=default_timeout, default_retries=default_retries)
+        self.world_model = world_model or WorldModel(Persistence.get())
+
     async def validate(self, payload: WebInput) -> None:
         if payload.action == "search_web" and not payload.query:
             raise ValueError("query is required")
@@ -72,6 +92,11 @@ class WebTool(BaseTool):
             raise ValueError("candidates are required")
 
     async def _run(self, payload: WebInput) -> WebOutput:
+        if payload.action == "search_web":
+            cached = await self._get_cached_search(payload.query or "")
+            if cached is not None:
+                return WebOutput(success=True, message="search_web", details=cached)
+
         async with httpx.AsyncClient(timeout=self.default_timeout, follow_redirects=True) as client:
             if payload.action == "check_url":
                 response = await client.get(payload.url)
@@ -130,7 +155,10 @@ class WebTool(BaseTool):
                     candidates.append(candidate)
                     if len(candidates) >= 10:
                         break
-                return WebOutput(success=True, message="search_web", details={"query": payload.query, "candidates": candidates})
+                candidates = self._rank_candidates(candidates)
+                details = {"query": payload.query, "candidates": candidates, "cache_hit": False}
+                await self._cache_search(payload.query or "", details)
+                return WebOutput(success=True, message="search_web", details=details)
 
             if payload.action == "download_verified":
                 response = await client.get(payload.url)
@@ -163,10 +191,81 @@ class WebTool(BaseTool):
 
             if payload.action == "summarize_candidates":
                 candidates = payload.candidates or []
-                ranked = sorted(
-                    candidates,
-                    key=lambda item: (0 if item.get("trust") == "official" else 1, item.get("url") or ""),
-                )
+                ranked = self._rank_candidates(candidates)
                 return WebOutput(success=True, message="summarize_candidates", details={"ranked": ranked[:10]})
 
         raise ValueError(f"unsupported web action: {payload.action}")
+
+    async def _get_cached_search(self, query: str) -> Optional[Dict[str, Any]]:
+        key = self._search_cache_key(query)
+        if not key:
+            return None
+        entity = await self.world_model.get("web_resource", key)
+        if entity is None or not isinstance(entity.value, dict):
+            return None
+        details = dict(entity.value)
+        details["cache_hit"] = True
+        details.setdefault("query", query)
+        details["candidates"] = self._rank_candidates(details.get("candidates") or [])
+        return details
+
+    async def _cache_search(self, query: str, details: Dict[str, Any]) -> None:
+        key = self._search_cache_key(query)
+        if not key:
+            return
+        try:
+            await self.world_model.upsert(
+                "web_resource",
+                key,
+                {
+                    "query": query,
+                    "candidates": details.get("candidates") or [],
+                    "provider": "duckduckgo_html",
+                    "purpose": "autonomous_discovery_web_search",
+                },
+                confidence=0.75,
+                source="web.search_web",
+                tags=["web_search", "discovery", "cache"],
+                ttl_seconds=WEB_SEARCH_CACHE_TTL_SECONDS,
+            )
+        except Exception:
+            logger.debug("Failed to cache web search for query=%r", query, exc_info=True)
+
+    @staticmethod
+    def _search_cache_key(query: str) -> str:
+        normalized = re.sub(r"\s+", " ", (query or "").strip().lower())
+        if not normalized:
+            return ""
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+        return f"search:{digest}"
+
+    @staticmethod
+    def _quality_score(candidate: Dict[str, Any]) -> int:
+        url = candidate.get("url") or ""
+        hostname = (candidate.get("hostname") or urlparse(url).hostname or "").lower()
+        trust = candidate.get("trust") or describe_url(url).get("trust")
+        if hostname in PREFERRED_WEB_HOSTS:
+            return 0
+        if any(hostname.endswith(suffix) for suffix in PREFERRED_HOST_SUFFIXES):
+            return 1
+        if trust == "official":
+            return 2
+        if "stackoverflow.com" in hostname:
+            return 0
+        return 3
+
+    @classmethod
+    def _rank_candidates(cls, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        enriched = []
+        for index, item in enumerate(candidates):
+            candidate = dict(item)
+            url = candidate.get("url") or ""
+            if url and ("hostname" not in candidate or "trust" not in candidate):
+                candidate.update(describe_url(url))
+            candidate["quality_rank"] = cls._quality_score(candidate)
+            candidate["_original_index"] = index
+            enriched.append(candidate)
+        ranked = sorted(enriched, key=lambda item: (item["quality_rank"], item.get("hostname") or "", item["_original_index"]))
+        for item in ranked:
+            item.pop("_original_index", None)
+        return ranked

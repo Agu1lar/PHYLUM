@@ -386,7 +386,7 @@ def tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "web",
-                "description": "Use safe web research and validated downloads.",
+                "description": "Use safe web research and validated downloads. For unfamiliar technical procedures, use search_web as autonomous discovery, prefer official docs, Microsoft Learn, StackOverflow/SuperUser/ServerFault and vendor sources, then apply the result instead of only reporting links.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -782,6 +782,72 @@ def tool_definitions() -> List[Dict[str, Any]]:
 
 def agentic_tool_definitions() -> List[Dict[str, Any]]:
     return tool_definitions() + [
+        {
+            "type": "function",
+            "function": {
+                "name": "subagent",
+                "description": (
+                    "Spawn isolated sub-agents for complex discovery work that can run in parallel, "
+                    "then merge their findings. Use when independent branches can investigate network, "
+                    "drivers, web research, files, or system state at the same time."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["run_parallel_branches"]},
+                        "objective": {"type": "string", "description": "Overall objective the branches support."},
+                        "branches": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 6,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "objective": {"type": "string"},
+                                    "context": {"type": "string"},
+                                    "success_criteria": {"type": "string"},
+                                    "budget": {
+                                        "type": "object",
+                                        "properties": {
+                                            "max_steps": {"type": "integer", "minimum": 1, "maximum": 8},
+                                            "timeout_seconds": {"type": "integer", "minimum": 5, "maximum": 300},
+                                            "max_tool_calls": {"type": "integer", "minimum": 0, "maximum": 20},
+                                            "max_estimated_tokens": {"type": "integer", "minimum": 250, "maximum": 30000},
+                                            "max_cost_usd": {"type": "number", "minimum": 0},
+                                            "estimated_usd_per_1k_tokens": {"type": "number", "minimum": 0},
+                                            "max_context_chars": {"type": "integer", "minimum": 1000, "maximum": 120000},
+                                        },
+                                        "additionalProperties": False,
+                                    },
+                                },
+                                "required": ["objective"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "budget": {
+                            "type": "object",
+                            "properties": {
+                                "max_steps": {"type": "integer", "minimum": 1, "maximum": 8},
+                                "timeout_seconds": {"type": "integer", "minimum": 5, "maximum": 300},
+                                "max_tool_calls": {"type": "integer", "minimum": 0, "maximum": 20},
+                                "max_estimated_tokens": {"type": "integer", "minimum": 250, "maximum": 30000},
+                                "max_cost_usd": {"type": "number", "minimum": 0},
+                                "estimated_usd_per_1k_tokens": {"type": "number", "minimum": 0},
+                                "max_context_chars": {"type": "integer", "minimum": 1000, "maximum": 120000},
+                            },
+                            "additionalProperties": False,
+                        },
+                        "stop_on_first_success": {
+                            "type": "boolean",
+                            "description": "Cancel remaining branches when one branch reports the overall objective is satisfied.",
+                        },
+                    },
+                    "required": ["action", "branches"],
+                    "additionalProperties": False,
+                },
+            },
+        },
         {
             "type": "function",
             "function": {
