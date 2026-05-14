@@ -9,326 +9,326 @@ either version 3 of the License, or any later version. -->
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-PHYLUM e um runtime agentico que roda inteiramente na sua maquina. Nenhum dado sai do seu ambiente. Voce escolhe o provider LLM, voce controla as credenciais, voce decide o que o agente pode fazer. Codigo aberto sob GPLv3 — livre para usar, modificar e distribuir.
+PHYLUM is an agentic runtime that runs entirely on your machine. No data leaves your environment. You choose the LLM provider, you control the credentials, you decide what the agent can do. Open-source under GPLv3 — free to use, modify and distribute.
 
 ---
 
-## Por que PHYLUM?
+## Why PHYLUM?
 
-- **Local-first**: tudo roda no seu hardware. Seus dados nunca saem da sua maquina.
-- **Open-source (GPLv3)**: codigo aberto, auditavel, sem vendor lock-in.
-- **Voce escolhe o LLM**: Anthropic, OpenAI, Gemini, OpenRouter ou qualquer provider compativel. Traga sua propria API key.
-- **Zero telemetria**: nenhum tracking, nenhum analytics, nenhum phone-home.
-- **Autonomia real**: o agente planeja, executa, reflete, se recupera de falhas e aprende — sem depender de servicos cloud proprietarios.
+- **Local-first**: everything runs on your hardware. Your data never leaves your machine.
+- **Open-source (GPLv3)**: open, auditable code with no vendor lock-in.
+- **You choose the LLM**: Anthropic, OpenAI, Gemini, OpenRouter or any compatible provider. Bring your own API key.
+- **Zero telemetry**: no tracking, no analytics, no phone-home.
+- **Real autonomy**: the agent plans, executes, reflects, recovers from failures and learns — without relying on proprietary cloud services.
 
 ---
 
-## Visao geral
+## Overview
 
-PHYLUM recebe instrucoes em linguagem natural e as executa no ambiente Windows do usuario. Nao e um simples "tool runner" — e um runtime agentico completo que planeja, executa, reflete, se recupera de falhas e aprende com experiencias anteriores.
+PHYLUM receives natural language instructions and executes them in the user's Windows environment. It is not a simple "tool runner" — it is a full agentic runtime that plans, executes, reflects, recovers from failures and learns from past experiences.
 
-O agente opera com um ciclo cognitivo:
+The agent operates with a cognitive cycle:
 
 ```
-planner -> safety -> tool router -> execution -> reflection -> recovery (se necessario)
+planner -> safety -> tool router -> execution -> reflection -> recovery (if needed)
 ```
 
-Todo o ciclo e executado como um **grafo de estados dirigido** com 13 tipos de nos e transicoes condicionais, permitindo recuperacao precisa para o no exato onde uma falha ocorreu.
+The entire cycle runs as a **directed state graph** with 13 node types and conditional transitions, enabling precise recovery to the exact node where a failure occurred.
 
 ---
 
-## Stack tecnologica
+## Tech stack
 
-| Camada | Tecnologias |
+| Layer | Technologies |
 |---|---|
 | Backend | Python 3.11+, FastAPI, Uvicorn, aiosqlite |
 | Frontend | React, Vite, WebSocket |
-| LLM Integration | Multi-provider (OpenAI, Anthropic, Gemini), tool-calling nativo |
-| Automacao Windows | pywinauto, pywin32, WMI, win32com (COM) |
-| Automacao Web | Playwright |
-| Processamento de docs | pypdf, PyMuPDF, python-docx, openpyxl, extract-msg, Pillow, pytesseract |
-| Persistencia | SQLite (via aiosqlite), JSON KV store |
+| LLM Integration | Multi-provider (OpenAI, Anthropic, Gemini), native tool-calling |
+| Windows Automation | pywinauto, pywin32, WMI, win32com (COM) |
+| Web Automation | Playwright |
+| Document Processing | pypdf, PyMuPDF, python-docx, openpyxl, extract-msg, Pillow, pytesseract |
+| Persistence | SQLite (via aiosqlite), JSON KV store |
 | Vector DB | LanceDB (embedded, serverless) |
-| Validacao | Pydantic |
-| Testes | pytest, pytest-asyncio (420+ testes) |
+| Validation | Pydantic |
+| Tests | pytest, pytest-asyncio (420+ tests) |
 
 ---
 
-## Tecnologias implementadas no runtime
+## Technologies implemented in the runtime
 
-Estas capacidades sairam do roadmap e fazem parte da base atual do PHYLUM:
+These capabilities have graduated from the roadmap and are part of PHYLUM's current base:
 
-- **State Graph com DAG de subtarefas**: o pipeline e dirigido por grafo de estados e, dentro do runtime local, subtarefas usam dependency graph real por `depends_on`, com deteccao de ciclos, branches paralelos, execucao especulativa segura para reads e partial completion.
-- **Separacao reasoning/execution em camadas**: `CognitiveLayer` concentra planejamento, LLM loop e decisao de estrategia; `OperationalLayer` concentra task graph, recovery e graph executors; `ExecutionLayer` executa tools, safety, reflection e automacao desktop; `StateLayer` concentra persistencia, World Model, Strategy Memory, fila duravel e sessoes.
-- **Parallel tool calls**: quando o LLM emite multiplas tool calls independentes no mesmo turn, o agentic loop executa em paralelo via `asyncio.gather`, preservando a ordem original dos resultados no message history.
-- **Sub-agentes paralelos**: `subagent.run_parallel_branches` cria branches isolados com objetivo especifico, budget proprio de steps/timeout/tools/tokens/custo, merge de resultados e cancelamento em cascata quando um branch satisfaz o objetivo.
-- **Extended thinking Anthropic**: modelos Claude com thinking recebem `thinking: adaptive`, timeout estendido, persistencia de thinking blocks e eventos `agent_thinking` para observabilidade.
-- **Context window management**: `ContextWindowManager` comprime tool results antigos, preserva paths/URLs/numeros/status/IDs, mantem janela recente inteira e aplica emergency drop quando necessario.
-- **Web research como discovery autonoma**: o agente usa `web.search_web` como ferramenta interna de aprendizado quando nao sabe uma tecnica, prioriza fontes oficiais/Microsoft Learn/StackOverflow e cacheia resultados como `web_resource` no World Model.
-- **Prompt/tool caching**: system prompt, tool definitions e payloads provider-aware sao cacheados in-process; Anthropic usa `cache_control=ephemeral`.
+- **State Graph with subtask DAG**: the pipeline is driven by a state graph and, within the local runtime, subtasks use a real dependency graph via `depends_on`, with cycle detection, parallel branches, safe speculative execution for reads and partial completion.
+- **Reasoning/execution layer separation**: `CognitiveLayer` handles planning, LLM loop and strategy decisions; `OperationalLayer` handles task graph, recovery and graph executors; `ExecutionLayer` runs tools, safety, reflection and desktop automation; `StateLayer` handles persistence, World Model, Strategy Memory, durable queue and sessions.
+- **Parallel tool calls**: when the LLM emits multiple independent tool calls in the same turn, the agentic loop executes them in parallel via `asyncio.gather`, preserving the original order of results in the message history.
+- **Parallel sub-agents**: `subagent.run_parallel_branches` creates isolated branches with a specific objective, its own budget for steps/timeout/tools/tokens/cost, result merging and cascading cancellation when a branch satisfies the objective.
+- **Anthropic extended thinking**: Claude models with thinking receive `thinking: adaptive`, extended timeout, thinking block persistence and `agent_thinking` events for observability.
+- **Context window management**: `ContextWindowManager` compresses old tool results, preserves paths/URLs/numbers/status/IDs, keeps the recent window intact and applies emergency drop when needed.
+- **Web research as autonomous discovery**: the agent uses `web.search_web` as an internal learning tool when it doesn't know a technique, prioritizes official sources/Microsoft Learn/StackOverflow and caches results as `web_resource` in the World Model.
+- **Prompt/tool caching**: system prompt, tool definitions and provider-aware payloads are cached in-process; Anthropic uses `cache_control=ephemeral`.
 
 ---
 
-## Arquitetura
+## Architecture
 
-### Fluxo principal
+### Main flow
 
-1. O usuario envia uma instrucao pela UI ou API
-2. O **RuntimeManager** cria a run e persiste o estado inicial
-3. O **PlannerAgent** decompoe a instrucao em tasks usando o catalogo canonico (ou fases ordenadas para goals complexos)
-4. O **SafetyNode** classifica risco e decide: `allow`, `require_approval` ou `deny`
-5. O **ToolRouterNode** executa a tool real
-6. O **ReflectionNode** gera um resumo semantico da acao
-7. O **RecoveryEngine** decide: retry, handoff humano, replanning, script alternativo ou falha terminal
-8. O **ExecutionStrategy** pode redirecionar tasks entre processamento interno e desktop automaticamente
-9. Eventos de run/task/approval/handoff/recovery sao emitidos por WebSocket para a UI em tempo real
+1. The user sends an instruction via the UI or API
+2. The **RuntimeManager** creates the run and persists the initial state
+3. The **PlannerAgent** decomposes the instruction into tasks using the canonical catalog (or ordered phases for complex goals)
+4. The **SafetyNode** classifies risk and decides: `allow`, `require_approval` or `deny`
+5. The **ToolRouterNode** executes the actual tool
+6. The **ReflectionNode** generates a semantic summary of the action
+7. The **RecoveryEngine** decides: retry, human handoff, replanning, alternative script or terminal failure
+8. The **ExecutionStrategy** can transparently redirect tasks between internal processing and desktop automatically
+9. Run/task/approval/handoff/recovery events are emitted via WebSocket to the UI in real time
 
-### Grafo de estados
+### State graph
 
-Cada pipeline do runtime e modelado como um grafo dirigido:
+Each runtime pipeline is modeled as a directed graph:
 
-| Tipo de no | Funcao |
+| Node type | Function |
 |---|---|
-| `entry` | Ponto de entrada |
-| `planner` | Decomposicao de tasks |
-| `safety` | Classificacao de risco |
-| `approval` | Gate de aprovacao humana |
-| `executor` | Execucao de tool |
-| `reflection` | Analise de resultado |
-| `recovery` | Classificacao de falha |
+| `entry` | Entry point |
+| `planner` | Task decomposition |
+| `safety` | Risk classification |
+| `approval` | Human approval gate |
+| `executor` | Tool execution |
+| `reflection` | Result analysis |
+| `recovery` | Failure classification |
 | `script_recovery` | Fallback via sandbox |
-| `checkpoint` | Persistencia de progresso |
-| `handoff` | Transferencia para humano |
-| `complete` / `fail` | Estados terminais |
+| `checkpoint` | Progress persistence |
+| `handoff` | Transfer to human |
+| `complete` / `fail` | Terminal states |
 
-Tres topologias de grafo compiladas: **agentic** (LLM-driven), **local_heuristic** (regras locais) e **manual_assist** (plan-and-present).
+Three compiled graph topologies: **agentic** (LLM-driven), **local_heuristic** (local rules) and **manual_assist** (plan-and-present).
 
-### Arquivos centrais
+### Core files
 
-| Arquivo | Responsabilidade |
+| File | Responsibility |
 |---|---|
-| `app_main.py` | FastAPI app, endpoints REST, daemon lifecycle |
-| `runtime_manager.py` | Orquestracao de runs, pipelines, daemon loop |
-| `agentic_loop.py` | Loop LLM com tool-calling e reflection |
-| `action_executor.py` | Execucao de tasks com recovery |
-| `recovery_engine.py` | Classificacao de falhas, target_node para grafo |
-| `execution_strategy.py` | Decisao autonoma de modo de execucao |
-| `canonical_tools.py` | Catalogo canonico de tools |
-| `tool_registry.py` | Instanciacao e dispatch de tools |
-| `state_graph.py` | Engine de grafo de estados |
-| `graph_definitions.py` | Topologias de grafo por pipeline |
-| `world_model.py` | Entidades tipadas com confianca e TTL |
-| `strategy_memory.py` | Historico de estrategias por tipo de objetivo |
-| `semantic_index.py` | Vector DB para busca semantica |
-| `prompt_cache.py` | Cache de prompt e tools para LLM |
-| `selector_healing.py` | Self-healing de seletores UI |
-| `sandbox_executor.py` | Execucao isolada de Python/PowerShell |
-| `artifact_processor.py` | Processamento interno de arquivos |
-| `dynamic_tool_creator.py` | Criacao de micro-ferramentas em runtime |
-| `durable_queue.py` | Fila duravel de objetivos (SQLite) |
-| `session_manager.py` | Sessoes duraveis por objetivo/workspace |
-| `planner_agent.py` | Planner com decomposicao de goals |
+| `app_main.py` | FastAPI app, REST endpoints, daemon lifecycle |
+| `runtime_manager.py` | Run orchestration, pipelines, daemon loop |
+| `agentic_loop.py` | LLM loop with tool-calling and reflection |
+| `action_executor.py` | Task execution with recovery |
+| `recovery_engine.py` | Failure classification, target_node for graph |
+| `execution_strategy.py` | Autonomous execution mode decision |
+| `canonical_tools.py` | Canonical tool catalog |
+| `tool_registry.py` | Tool instantiation and dispatch |
+| `state_graph.py` | State graph engine |
+| `graph_definitions.py` | Graph topologies per pipeline |
+| `world_model.py` | Typed entities with confidence and TTL |
+| `strategy_memory.py` | Strategy history by objective type |
+| `semantic_index.py` | Vector DB for semantic search |
+| `prompt_cache.py` | Prompt and tool cache for LLM |
+| `selector_healing.py` | UI selector self-healing |
+| `sandbox_executor.py` | Isolated Python/PowerShell execution |
+| `artifact_processor.py` | Internal file processing |
+| `dynamic_tool_creator.py` | Runtime micro-tool creation |
+| `durable_queue.py` | Durable goal queue (SQLite) |
+| `session_manager.py` | Durable sessions per objective/workspace |
+| `planner_agent.py` | Planner with goal decomposition |
 
 ---
 
-## Capacidades do sistema
+## System capabilities
 
-### 1. Automacao de desktop Windows
+### 1. Windows desktop automation
 
-- **Gerenciamento de processos e janelas**: listar, abrir, fechar, trazer ao foco
-- **Explorer profundo**: drives mapeados, pastas, contexto de janelas abertas
-- **UI Automation nativa** via pywinauto: inspecionar, clicar, preencher, selecionar, scroll, hotkeys, esperar elementos
-- **Selector healing automatico**: quando um seletor UI falha, o agente busca candidatos similares no World Model, testa na UI ao vivo e atualiza com confianca renovada
-- **Office COM adapters headless**: Word (abrir, buscar texto, exportar PDF, save-as, criar documentos), Excel (ler ranges, listar planilhas), Outlook (ler emails recentes, buscar mensagens, criar rascunho) — tudo rodando em background sem exigir que o usuario abra nenhum aplicativo
-- **Discovery operacional**: aplicativos instalados, servicos, shares SMB, clipboard, notificacoes
+- **Process and window management**: list, open, close, bring to focus
+- **Deep Explorer**: mapped drives, folders, open window context
+- **Native UI Automation** via pywinauto: inspect, click, fill, select, scroll, hotkeys, wait for elements
+- **Automatic selector healing**: when a UI selector fails, the agent searches for similar candidates in the World Model, tests them against the live UI and updates with renewed confidence
+- **Headless Office COM adapters**: Word (open, search text, export PDF, save-as, create documents), Excel (read ranges, list sheets), Outlook (read recent emails, search messages, create drafts) — all running in background without requiring the user to open any application
+- **Operational discovery**: installed applications, services, SMB shares, clipboard, notifications
 
-### 2. Processamento de documentos e artefatos
+### 2. Document and artifact processing
 
-- **Processamento interno** sem abrir no desktop: TXT, CSV, JSON, PDF, DOCX, XLSX, MSG
-- **Extracao de texto** com OCR opcional (pytesseract + PyMuPDF)
-- **Discovery documental**: busca por nome ou conteudo, filtros de metadados
-- **Classificacao**: contratos, notas fiscais, emails, anexos
-- **Indexacao local** para consultas recorrentes
+- **Internal processing** without opening on desktop: TXT, CSV, JSON, PDF, DOCX, XLSX, MSG
+- **Text extraction** with optional OCR (pytesseract + PyMuPDF)
+- **Document discovery**: search by name or content, metadata filters
+- **Classification**: contracts, invoices, emails, attachments
+- **Local indexing** for recurring queries
 
-### 3. Execucao dinamica de codigo
+### 3. Dynamic code execution
 
-- **Sandbox isolado** para Python e PowerShell com timeout, cancelamento e coleta de artefatos
-- **Auto-inject de COM init**: scripts sandbox que usam win32com recebem automaticamente `pythoncom.CoInitialize()` e `try/except` wrapper
-- **Fallback sync**: quando `asyncio.create_subprocess_exec` falha com `NotImplementedError` (certas configs Windows), o sandbox cai para `subprocess.run` via thread
-- **Scripts gerados em tempo real** para resolver problemas nao previstos
-- **Orquestracao multi-fonte**: um unico script pode ler emails (Outlook COM), cruzar com planilha (openpyxl), e gerar relatorio
-- **Auto-criacao de micro-tools**: ferramentas persistidas em disco e reutilizaveis entre runs
-- **Recuperacao por script alternativo**: quando Office COM falha, gera script openpyxl; quando browser falha, gera script urllib
+- **Isolated sandbox** for Python and PowerShell with timeout, cancellation and artifact collection
+- **Auto-inject COM init**: sandbox scripts using win32com automatically receive `pythoncom.CoInitialize()` and `try/except` wrapper
+- **Sync fallback**: when `asyncio.create_subprocess_exec` fails with `NotImplementedError` (certain Windows configs), the sandbox falls back to `subprocess.run` via thread
+- **Scripts generated in real time** to solve unforeseen problems
+- **Multi-source orchestration**: a single script can read emails (Outlook COM), cross-reference with a spreadsheet (openpyxl), and generate a report
+- **Auto-creation of micro-tools**: tools persisted to disk and reusable across runs
+- **Alternative script recovery**: when Office COM fails, generates openpyxl scripts; when browser fails, generates urllib scripts
 
-### 4. Navegacao web
+### 4. Web navigation
 
-- **Playwright** para DOM, navegacao e interacao
-- Bridge para dialogos nativos disparados pelo browser
+- **Playwright** for DOM, navigation and interaction
+- Bridge for native dialogs triggered by the browser
 
-### 5. Planejamento inteligente
+### 5. Intelligent planning
 
-- **Decomposicao multi-step**: tarefas complexas viram sequencias de sub-tasks
-- **Decomposicao multi-fase**: goals complexos sao divididos em fases ordenadas com dependencias
-- **Decisao autonoma**: o agente decide automaticamente entre processamento interno (artifact/sandbox) e desktop (apps nativos, UI, Office COM)
-- **Preenchimento de lacunas**: tools inexistentes sao contornadas com sandbox scripts ou dynamic tools
-- **Fallback proativo**: se o caminho primario falha, o agente gera abordagens alternativas automaticamente
+- **Multi-step decomposition**: complex tasks become sequences of sub-tasks
+- **Multi-phase decomposition**: complex goals are divided into ordered phases with dependencies
+- **Autonomous decision**: the agent automatically decides between internal processing (artifact/sandbox) and desktop (native apps, UI, Office COM)
+- **Gap filling**: missing tools are worked around with sandbox scripts or dynamic tools
+- **Proactive fallback**: if the primary path fails, the agent automatically generates alternative approaches
 
-### 6. Memoria e aprendizado
+### 6. Memory and learning
 
-- **World Model tipado** com 9 tipos de entidade: share, app_path, document_alias, selector, path_candidate, device, web_resource, user_preference, environment
-- **Confianca com decay temporal**: cada entidade tem score 0.0-1.0 que decai 0.05/dia, com TTL/expiracao por tipo
-- **Strategy Memory**: registra sequencias de tool calls bem-sucedidas por tipo de objetivo, com confidence, used_count e context_tags
-- **Busca semantica** via Vector DB local (LanceDB): encontra estrategias e entidades por similaridade semantica, nao apenas substring
-- **Reaproveitamento automatico**: seletores UI, caminhos de rede, localizacoes de apps e estrategias anteriores sao reutilizados sem re-discovery
-- **Auto-persistencia**: toda discovery (shares, apps, selectors) e automaticamente salva no world model
+- **Typed World Model** with 9 entity types: share, app_path, document_alias, selector, path_candidate, device, web_resource, user_preference, environment
+- **Confidence with temporal decay**: each entity has a 0.0-1.0 score that decays 0.05/day, with TTL/expiration per type
+- **Strategy Memory**: records successful tool call sequences by objective type, with confidence, used_count and context_tags
+- **Semantic search** via local Vector DB (LanceDB): finds strategies and entities by semantic similarity, not just substring
+- **Automatic reuse**: UI selectors, network paths, app locations and past strategies are reused without re-discovery
+- **Auto-persistence**: all discovery (shares, apps, selectors) is automatically saved to the world model
 
-### 7. Runtime duravel
+### 7. Durable runtime
 
-- **Daemon always-on**: loop a cada 5s processando fila de goals, promovendo diferidos, recuperando travados
-- **Fila duravel** (SQLite): prioridade, retry automatico, scheduling, hierarquia de goals, workspaces
-- **Sessoes duraveis** por objetivo e workspace: checkpoint, fases, contexto acumulado, expiracao
-- **Job checkpoints**: snapshots de estado para retomada apos crash ou restart
-- **Concorrencia**: ate 3 runs simultaneos processados pelo daemon
-- **Lifecycle completo**: queued → running → completed/failed/cancelled/retrying/deferred
+- **Always-on daemon**: loop every 5s processing goal queue, promoting deferred goals, recovering stuck ones
+- **Durable queue** (SQLite): priority, automatic retry, scheduling, goal hierarchy, workspaces
+- **Durable sessions** per objective and workspace: checkpoint, phases, accumulated context, expiration
+- **Job checkpoints**: state snapshots for resumption after crash or restart
+- **Concurrency**: up to 3 simultaneous runs processed by the daemon
+- **Full lifecycle**: queued → running → completed/failed/cancelled/retrying/deferred
 
-### 8. Controle e seguranca
+### 8. Control and security
 
-- **Handoff humano real**: pause → reply → resume com contexto preservado
-- **Approvals por efeito**: mutacoes reais exigem aprovacao, discovery e reads sao permitidos
-- **Safety classification**: cada acao e classificada em allow/require_approval/deny
-- **Cancel real**: runs podem ser canceladas mid-execution com cleanup
+- **Real human handoff**: pause → reply → resume with preserved context
+- **Effect-based approvals**: real mutations require approval, discovery and reads are allowed
+- **Safety classification**: each action is classified as allow/require_approval/deny
+- **Real cancel**: runs can be cancelled mid-execution with cleanup
 
-### 9. Otimizacoes de performance
+### 9. Performance optimizations
 
-- **Prompt caching**: system prompt (~3000+ tokens) e tool definitions (~35+ tools) cacheados in-process entre steps
-- **Anthropic prompt caching nativo**: cache_control=ephemeral para cache server-side do provider
-- **Provider-aware**: zero overhead de caching para providers sem suporte
-- **Feature hashing local**: embeddings de 128 dimensoes sem API externa para busca semantica
+- **Prompt caching**: system prompt (~3000+ tokens) and tool definitions (~35+ tools) cached in-process between steps
+- **Native Anthropic prompt caching**: cache_control=ephemeral for server-side provider cache
+- **Provider-aware**: zero caching overhead for providers without support
+- **Local feature hashing**: 128-dimension embeddings without external API for semantic search
 
 ---
 
-## Catalogo de tools
+## Tool catalog
 
-O catalogo canonico compartilhado por planner, runtime, API e UI:
+The canonical catalog shared by planner, runtime, API and UI:
 
-| Tool | Acoes |
+| Tool | Actions |
 |---|---|
-| `shell` | Execucao de comandos |
-| `filesystem` | Leitura, escrita, busca, copy/move, organizacao, undo |
-| `memory` | World model + strategy memory (30+ acoes) + busca semantica |
-| `browser` | Playwright para DOM e navegacao |
-| `web` | Requisicoes HTTP |
-| `package_manager` | Gerenciamento de pacotes |
-| `software_inventory` | Inventario de software instalado |
-| `env_manager` | Variaveis de ambiente |
-| `driver_manager` | Drivers de dispositivos |
-| `os` | Operacoes de sistema |
-| `desktop` | Processos, janelas, Explorer, drives, clipboard, servicos |
-| `windows_ui` | Inspecao, clique, preenchimento, scroll, hotkeys, espera |
-| `share_discovery` | Shares SMB e contexto do Explorer |
-| `document_intelligence` | Inspecao, extracao, busca documental |
-| `office` | Word (abrir, buscar, criar, exportar PDF), Excel (ler ranges, listar planilhas), Outlook (ler emails recentes, buscar, rascunho) — tudo headless |
-| `sandbox` | Execucao de Python/PowerShell em sandbox |
-| `artifact` | Processamento interno de arquivos |
-| `dynamic_tool` | Criacao e execucao de micro-tools |
+| `shell` | Command execution |
+| `filesystem` | Read, write, search, copy/move, organize, undo |
+| `memory` | World model + strategy memory (30+ actions) + semantic search |
+| `browser` | Playwright for DOM and navigation |
+| `web` | HTTP requests |
+| `package_manager` | Package management |
+| `software_inventory` | Installed software inventory |
+| `env_manager` | Environment variables |
+| `driver_manager` | Device drivers |
+| `os` | System operations |
+| `desktop` | Processes, windows, Explorer, drives, clipboard, services |
+| `windows_ui` | Inspect, click, fill, scroll, hotkeys, wait |
+| `share_discovery` | SMB shares and Explorer context |
+| `document_intelligence` | Inspection, extraction, document search |
+| `office` | Word (open, search, create, export PDF), Excel (read ranges, list sheets), Outlook (read recent emails, search, draft) — all headless |
+| `sandbox` | Python/PowerShell execution in sandbox |
+| `artifact` | Internal file processing |
+| `dynamic_tool` | Micro-tool creation and execution |
 
 ---
 
-## Exemplos de uso
+## Usage examples
 
-O que o sistema consegue fazer hoje:
+What the system can do today:
 
-- "Abra o Word e exporte o documento X para PDF"
-- "Descubra todos os drives mapeados e liste os compartilhamentos de rede"
-- "Busque documentos que mencionem 'contrato de servico' e me de um resumo"
-- "Leia a planilha de vendas, cruze com os emails do Outlook e gere um relatorio"
-- "Instale a impressora de rede HP do escritorio"
-- "Configure o caminho do aplicativo X no sistema"
-- "Me de um resumo dos ultimos 10 emails do Outlook sobre o projeto Y"
-- "Retorne meus 3 ultimos emails do Outlook em um documento Word" (sem abrir nenhum app)
-- "Crie um script que organize os arquivos da pasta Downloads por tipo e data"
-- "Investigue por que a impressora nao esta funcionando" (com pause para pedir contexto)
-- "Processe este CSV de 50mil linhas e me de as top 10 categorias por receita"
+- "Open Word and export document X to PDF"
+- "Discover all mapped drives and list network shares"
+- "Search for documents mentioning 'service contract' and give me a summary"
+- "Read the sales spreadsheet, cross-reference with Outlook emails and generate a report"
+- "Install the office HP network printer"
+- "Configure the path for application X on the system"
+- "Give me a summary of the last 10 Outlook emails about project Y"
+- "Return my last 3 Outlook emails in a Word document" (without opening any app)
+- "Create a script that organizes files in the Downloads folder by type and date"
+- "Investigate why the printer is not working" (with pause to ask for context)
+- "Process this 50k-line CSV and give me the top 10 categories by revenue"
 
 ---
 
-## Tratamentos e nuances
+## Implementation details
 
-### Recovery inteligente
+### Intelligent recovery
 
-O `RecoveryEngine` nao apenas classifica erros — ele resolve. Cada falha gera uma classificacao com `target_node` indicando para onde o grafo deve retornar:
+The `RecoveryEngine` doesn't just classify errors — it resolves them. Each failure generates a classification with `target_node` indicating where the graph should return to:
 
-- **retry** → volta ao `executor` com a mesma task
-- **replan** → volta ao `planner` para gerar nova abordagem
-- **script_recovery** → vai ao `script_recovery` para executar script alternativo
-- **ask_user** → vai ao `handoff` para transferir ao humano
-- **stop** → vai ao `fail` como estado terminal
+- **retry** → returns to `executor` with the same task
+- **replan** → returns to `planner` to generate a new approach
+- **script_recovery** → goes to `script_recovery` to execute an alternative script
+- **ask_user** → goes to `handoff` to transfer to human
+- **stop** → goes to `fail` as terminal state
 
-Quando Office COM falha, scripts openpyxl/python-docx sao gerados automaticamente. Quando filesystem falha, scripts os/shutil substituem. Quando browser falha, scripts urllib/requests contornam.
+When Office COM fails, openpyxl/python-docx scripts are generated automatically. When filesystem fails, os/shutil scripts substitute. When browser fails, urllib/requests scripts work around it.
 
 ### Selector healing
 
-UI automation e inerentemente fragil — seletores quebram com atualizacoes de software. O sistema trata isso com self-healing:
+UI automation is inherently fragile — selectors break with software updates. The system handles this with self-healing:
 
-1. pywinauto falha em encontrar o elemento
-2. O healer busca candidatos similares no World Model (por app_context + fuzzy similarity)
-3. Candidatos sao testados contra a UI ao vivo
-4. Se funcionar, o seletor original e atualizado com confianca renovada
-5. Um alias e criado para o intent do seletor falho
+1. pywinauto fails to find the element
+2. The healer searches for similar candidates in the World Model (by app_context + fuzzy similarity)
+3. Candidates are tested against the live UI
+4. If it works, the original selector is updated with renewed confidence
+5. An alias is created for the failed selector's intent
 
-Thresholds configuraveis: `HEAL_MIN_SCORE=0.60`, `HEAL_CONFIDENCE_ON_SUCCESS=0.90`, `HEAL_CONFIDENCE_BOOST=0.15`.
+Configurable thresholds: `HEAL_MIN_SCORE=0.60`, `HEAL_CONFIDENCE_ON_SUCCESS=0.90`, `HEAL_CONFIDENCE_BOOST=0.15`.
 
-### Decisao autonoma de modo de execucao
+### Autonomous execution mode decision
 
-O `ExecutionStrategy` analisa cada task e decide transparentemente:
+The `ExecutionStrategy` analyzes each task and decides transparently:
 
-- **internal**: dados que podem ser processados em memoria (CSV, JSON, texto)
-- **desktop**: interacao visual necessaria (clicar, arrastar, preencher formularios)
-- **script**: melhor resolvido com um script sob medida
-- **native**: deve usar a tool nativa diretamente
+- **internal**: data that can be processed in memory (CSV, JSON, text)
+- **desktop**: visual interaction needed (click, drag, fill forms)
+- **script**: best solved with a tailored script
+- **native**: should use the native tool directly
 
-Office COM e tratado como **headless** (background): `office.outlook_read_latest`, `office.outlook_search_messages`, `office.word_create_document` executam via COM sem exigir que o usuario abra Outlook/Word. O agente nunca pede para o usuario abrir nenhum aplicativo.
+Office COM is treated as **headless** (background): `office.outlook_read_latest`, `office.outlook_search_messages`, `office.word_create_document` execute via COM without requiring the user to open Outlook/Word. The agent never asks the user to open any application.
 
-### Sandbox robusto para COM
+### Robust COM sandbox
 
-Scripts no sandbox que usam `win32com` ou `Dispatch` recebem automaticamente:
-- `pythoncom.CoInitialize()` / `CoUninitialize()` para inicializacao correta do COM apartment
-- `try/except` wrapper com `traceback.print_exc()` para nunca falhar silenciosamente
-- `sys.exit(1)` em caso de excecao para garantir returncode != 0
-- `CREATE_NO_WINDOW` flag no Windows para evitar popups COM bloqueantes
-- Fallback para `subprocess.run` via thread quando `asyncio.create_subprocess_exec` lanca `NotImplementedError`
-- `sys.executable` em vez de `"python"` para garantir o mesmo interpretador
+Sandbox scripts using `win32com` or `Dispatch` automatically receive:
+- `pythoncom.CoInitialize()` / `CoUninitialize()` for correct COM apartment initialization
+- `try/except` wrapper with `traceback.print_exc()` to never fail silently
+- `sys.exit(1)` on exception to guarantee returncode != 0
+- `CREATE_NO_WINDOW` flag on Windows to avoid blocking COM popups
+- Fallback to `subprocess.run` via thread when `asyncio.create_subprocess_exec` raises `NotImplementedError`
+- `sys.executable` instead of `"python"` to guarantee the same interpreter
 
-### Persistencia e durabilidade
+### Persistence and durability
 
-O sistema sobrevive crashes e restarts:
+The system survives crashes and restarts:
 
-- Fila de goals persiste em SQLite
-- Sessoes acumulam contexto entre runs
-- Job checkpoints capturam snapshots de estado completo
-- O daemon recupera goals travados (stale > 600s)
-- Checkpoints sao deletados apos estados terminais
+- Goal queue persists in SQLite
+- Sessions accumulate context across runs
+- Job checkpoints capture complete state snapshots
+- The daemon recovers stuck goals (stale > 600s)
+- Checkpoints are deleted after terminal states
 
-### Busca semantica vs. tipada
+### Semantic vs. typed search
 
-O World Model e Strategy Memory operam em duas camadas de busca:
+The World Model and Strategy Memory operate on two search layers:
 
-- **Tipada** (substring): `find_strategies("install_printer")` busca por substring exata
-- **Semantica** (vetorial): `semantic_search("setup printing device")` encontra "install network printer driver" por similaridade de embeddings
+- **Typed** (substring): `find_strategies("install_printer")` searches by exact substring
+- **Semantic** (vector): `semantic_search("setup printing device")` finds "install network printer driver" by embedding similarity
 
-O Vector DB (LanceDB) usa feature hashing local (128 dim, cosine metric) — zero dependencia de API externa, funciona 100% offline.
+The Vector DB (LanceDB) uses local feature hashing (128 dim, cosine metric) — zero external API dependency, works 100% offline.
 
 ### Prompt caching
 
-Em um agentic loop de 16 steps, o system prompt (~3000+ tokens) e tool definitions (~35 tools) eram reconstruidos 16 vezes. Com o cache:
+In a 16-step agentic loop, the system prompt (~3000+ tokens) and tool definitions (~35 tools) were rebuilt 16 times. With caching:
 
-- Construidos **1 vez**, reutilizados **15 vezes**
-- Para Anthropic: `cache_control=ephemeral` ativa cache server-side
-- Para outros providers: zero overhead
+- Built **once**, reused **15 times**
+- For Anthropic: `cache_control=ephemeral` activates server-side cache
+- For other providers: zero overhead
 
 ---
 
-## Execucao rapida
+## Quick start
 
 ### Backend
 
@@ -348,7 +348,7 @@ npm install
 npm run dev
 ```
 
-### Testes
+### Tests
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
@@ -358,25 +358,25 @@ npm run dev
 
 ## Diagnostics
 
-O backend expoe endpoints para verificar prontidao operacional:
+The backend exposes endpoints to verify operational readiness:
 
-| Endpoint | Funcao |
+| Endpoint | Function |
 |---|---|
-| `GET /health` | Saude geral do sistema |
-| `GET /tools` | Lista de tools disponiveis |
-| `GET /diagnostics/doctor` | Diagnostico completo do ambiente |
-| `GET /onboarding/capabilities` | Capacidades detectadas |
-| `GET /daemon/status` | Estado do daemon loop |
-| `GET /goals` | Lista de goals na fila |
-| `GET /sessions` | Sessoes ativas |
+| `GET /health` | Overall system health |
+| `GET /tools` | Available tools list |
+| `GET /diagnostics/doctor` | Full environment diagnostic |
+| `GET /onboarding/capabilities` | Detected capabilities |
+| `GET /daemon/status` | Daemon loop state |
+| `GET /goals` | Goals in queue |
+| `GET /sessions` | Active sessions |
 
 ---
 
-## Cobertura de testes
+## Test coverage
 
-**420+ testes** organizados por componente:
+**420+ tests** organized by component:
 
-| Suite | Testes | Cobertura |
+| Suite | Tests | Coverage |
 |---|---|---|
 | `test_phase1_sandbox.py` | 33 | Sandbox executor, artifact processor, dynamic tools |
 | `test_phase2_world_model.py` | 63 | WorldEntity, WorldModel, StrategyRecord, StrategyMemory, MemoryTool |
@@ -386,241 +386,237 @@ O backend expoe endpoints para verificar prontidao operacional:
 | `test_selector_healing.py` | 32 | SelectorHealer, similarity, WorldModel integration, end-to-end |
 | `test_prompt_cache.py` | 33 | PromptCache, CacheStats, Anthropic integration, lifecycle |
 | `test_semantic_index.py` | 31 | Embeddings, LanceDB, semantic search, cross-domain matching |
-| Outros | 84+ | Runtime, providers, shell, filesystem, network, planner, reflection |
+| Others | 84+ | Runtime, providers, shell, filesystem, network, planner, reflection |
 
 ---
 
-## Roadmap futuro
+## Future roadmap
 
-### Proximas evolucoes
+### Next evolutions
 
-#### Governanca arquitetural
+#### Architectural governance
 
-O sistema ja possui ~20 modulos com responsabilidades distintas. O maior risco e complexidade descontrolada.
+The system already has ~20 modules with distinct responsibilities. The biggest risk is uncontrolled complexity.
 
-- [ ] Contratos claros entre camadas (interfaces, nao implementacoes)
-- [ ] Boundaries explicitos entre modulos com testes de contrato
-- [ ] Invariantes arquiteturais documentados e enforced por CI
+- [ ] Clear contracts between layers (interfaces, not implementations)
+- [ ] Explicit boundaries between modules with contract tests
+- [ ] Architectural invariants documented and enforced by CI
 
-#### Event bus explicito
+#### Explicit event bus
 
-O sistema ja e implicitamente event-driven (retries, replanning, handoffs, approvals, pause/resume). A evolucao natural e um event bus first-class.
+The system is already implicitly event-driven (retries, replanning, handoffs, approvals, pause/resume). The natural evolution is a first-class event bus.
 
-- [ ] Event bus entre componentes (desacoplar orchestration de execution)
-- [ ] State transitions como eventos first-class
-- [ ] Novos consumers sem modificar producers
+- [ ] Event bus between components (decouple orchestration from execution)
+- [ ] State transitions as first-class events
+- [ ] New consumers without modifying producers
 
-#### Hardening do sandbox
+#### Sandbox hardening
 
-Execucao dinamica de Python/PowerShell em ambiente agentico exige protecoes robustas:
+Dynamic Python/PowerShell execution in an agentic environment requires robust protections:
 
-- [ ] Capability isolation (restringir acesso por script)
-- [ ] Filesystem scopes (limitar I/O por run)
-- [ ] Command policies (whitelist/blacklist de comandos e modulos)
-- [ ] Provenance (rastrear origem de cada script: quem gerou, por que, quando)
-- [ ] Audit trails (log completo de inputs e outputs)
+- [ ] Capability isolation (restrict access per script)
+- [ ] Filesystem scopes (limit I/O per run)
+- [ ] Command policies (whitelist/blacklist of commands and modules)
+- [ ] Provenance (track origin of each script: who generated it, why, when)
+- [ ] Audit trails (complete log of inputs and outputs)
 
-#### Verificacao semantica robusta
+#### Robust semantic verification
 
-Alem de verificar se a tool retornou success, verificar se o objetivo real foi alcancado:
+Beyond checking whether the tool returned success, verify whether the real objective was achieved:
 
-- [ ] Goal verification ("o objetivo foi realmente atingido?")
-- [ ] Semantic validation ("o resultado faz sentido no contexto?")
-- [ ] Postcondition checks ("o relatorio foi criado?", "o email foi enviado?")
+- [ ] Goal verification ("was the objective actually achieved?")
+- [ ] Semantic validation ("does the result make sense in context?")
+- [ ] Postcondition checks ("was the report created?", "was the email sent?")
 
 #### Execution economics
 
-Controle economico de execucao para evitar loops caros e exploracao inutil:
+Economic execution control to avoid expensive loops and wasteful exploration:
 
-- [ ] Custo por run (tokens, tempo, recursos)
-- [ ] Complexidade de caminho (tools e passos por abordagem)
-- [ ] Heuristicas de parada (quando pedir ajuda vs. explorar mais)
-- [ ] Otimizacao de rota (escolher caminho mais eficiente)
+- [ ] Cost per run (tokens, time, resources)
+- [ ] Path complexity (tools and steps per approach)
+- [ ] Stopping heuristics (when to ask for help vs. explore further)
+- [ ] Route optimization (choose the most efficient path)
 
-#### Embedding models reais
+#### Real embedding models
 
-O semantic index usa feature hashing local (rapido, offline, deterministico). Para buscas mais sofisticadas:
+The semantic index uses local feature hashing (fast, offline, deterministic). For more sophisticated searches:
 
-- [ ] Plug-in de sentence-transformers ou modelos all-MiniLM
-- [ ] Re-ranking hibrido (BM25 + vetorial)
-- [ ] Indexacao incremental com batch updates
+- [ ] Plug-in for sentence-transformers or all-MiniLM models
+- [ ] Hybrid re-ranking (BM25 + vector)
+- [ ] Incremental indexing with batch updates
 
-### Capacidades avancadas (proximo nivel)
+### Advanced capabilities (next level)
 
-#### Percepcao visual e computer-use hibrido
+#### Visual perception and hybrid computer-use
 
-PHYLUM evita pixel automation como caminho primario, mas sistemas de automacao amplos precisam fallback visual quando nao ha API nativa confiavel.
+PHYLUM avoids pixel automation as the primary path, but broad automation systems need visual fallback when there is no reliable native API.
 
-- [ ] Screenshot state model: capturar tela/janela, OCR, elementos visuais, coordenadas e relacao com UIA
-- [ ] Grounding visual: mapear texto/controles detectados por screenshot para seletores `windows_ui`
-- [ ] Fallback controlado de mouse/teclado por coordenadas com bounding boxes verificadas
-- [ ] Verificacao visual pos-acao: comparar antes/depois, detectar modais, spinners, erros e confirmacoes
-- [ ] Replay visual de runs: timeline com screenshots redigidos e anotacoes de acao
-- [ ] Politica anti-fragilidade: preferir API nativa, usar visual apenas quando UIA/COM/DOM falharem
+- [ ] Screenshot state model: capture screen/window, OCR, visual elements, coordinates and relationship with UIA
+- [ ] Visual grounding: map text/controls detected by screenshot to `windows_ui` selectors
+- [ ] Controlled mouse/keyboard fallback by coordinates with verified bounding boxes
+- [ ] Post-action visual verification: compare before/after, detect modals, spinners, errors and confirmations
+- [ ] Visual run replay: timeline with redacted screenshots and action annotations
+- [ ] Anti-fragility policy: prefer native API, use visual only when UIA/COM/DOM fail
 
-#### Biblioteca de skills operacionais
+#### Operational skills library
 
-O projeto ja cria dynamic tools, mas ainda falta uma camada de skills versionadas, auditaveis e reutilizaveis por dominio.
+The project already creates dynamic tools, but still lacks a layer of versioned, auditable and reusable skills by domain.
 
-- [ ] Skill manifest local com nome, versao, permissiveis, inputs/outputs e riscos
-- [ ] Skill runner com sandbox e declaracao de capabilities antes da execucao
-- [ ] Skill discovery por objetivo: escolher skills instaladas antes de gerar script novo
-- [ ] Skill signing/checksum e provenance para evitar execucao de codigo alterado sem revisao
-- [ ] Skill evaluation: testes minimos por skill antes de disponibilizar ao agente
-- [ ] Marketplace local/offline: importar/exportar pacotes de skills sem telemetria
+- [ ] Local skill manifest with name, version, permissions, inputs/outputs and risks
+- [ ] Skill runner with sandbox and capability declaration before execution
+- [ ] Skill discovery by objective: choose installed skills before generating a new script
+- [ ] Skill signing/checksum and provenance to prevent execution of altered code without review
+- [ ] Skill evaluation: minimum tests per skill before making available to the agent
+- [ ] Local/offline marketplace: import/export skill packages without telemetry
 
-#### Automacao de desenvolvimento no workspace
+#### Workspace development automation
 
-Como o runtime roda acoplado ao workspace local, ele pode virar um operador de engenharia mais forte do que um executor generico de desktop.
+Since the runtime runs coupled to the local workspace, it can become a stronger engineering operator than a generic desktop executor.
 
-- [ ] Codebase map persistente: simbolos, imports, rotas, testes, configs e ownership por arquivo
-- [ ] Loop diagnostico de testes: rodar teste, interpretar falha, patch, rerodar teste alvo, ampliar regressao
-- [ ] Patch planner: decompor mudancas grandes em arquivos/owners com risco e ordem de aplicacao
-- [ ] Workspace awareness: detectar IDE aberta, branch, venv, task runner, portas dev e processos relacionados
-- [ ] Refactor guardrails: impedir edicoes fora do escopo e detectar alteracoes acidentais em arquivos nao relacionados
-- [ ] Relatorio de engenharia por run: arquivos tocados, comandos executados, testes rodados, riscos restantes
+- [ ] Persistent codebase map: symbols, imports, routes, tests, configs and ownership per file
+- [ ] Test diagnostic loop: run test, interpret failure, patch, rerun target test, expand regression
+- [ ] Patch planner: decompose large changes by files/owners with risk and application order
+- [ ] Workspace awareness: detect open IDE, branch, venv, task runner, dev ports and related processes
+- [ ] Refactor guardrails: prevent out-of-scope edits and detect accidental changes to unrelated files
+- [ ] Engineering report per run: files touched, commands executed, tests run, remaining risks
 
-#### Avaliacao continua de automacao
+#### Continuous automation evaluation
 
-Sistemas agenticos de automacao precisam medir se melhoram ou pioram ao longo do tempo.
+Agentic automation systems need to measure whether they improve or degrade over time.
 
-- [ ] Golden tasks locais: suite de tarefas representativas com fixtures e expected outcomes
-- [ ] Benchmarks por dominio: Office, filesystem, browser, Windows UI, drivers, documentos e web research
-- [ ] Regression replay: reexecutar runs antigas em modo dry-run para comparar plano, custo e resultado
-- [ ] Score de confianca por tool/action baseado em historico real de sucesso
-- [ ] Metricas de autonomia: steps ate sucesso, handoffs evitaveis, recoveries efetivos, loops interrompidos
-- [ ] Painel de qualidade por versao do runtime/modelo/provider
+- [ ] Local golden tasks: suite of representative tasks with fixtures and expected outcomes
+- [ ] Benchmarks by domain: Office, filesystem, browser, Windows UI, drivers, documents and web research
+- [ ] Regression replay: re-execute old runs in dry-run mode to compare plan, cost and result
+- [ ] Confidence score per tool/action based on real success history
+- [ ] Autonomy metrics: steps to success, avoidable handoffs, effective recoveries, interrupted loops
+- [ ] Quality dashboard per runtime/model/provider version
 
-#### Observabilidade e controle de sessoes desktop
+#### Desktop session observability and control
 
-Para automacao longa, o usuario precisa entender e controlar o que esta acontecendo sem ler logs crus.
+For long-running automation, the user needs to understand and control what is happening without reading raw logs.
 
-- [ ] Timeline visual por run com grafo de tasks, eventos, approvals, retries e screenshots opcionais
-- [ ] Pause/resume granular por task ou branch, nao apenas por run inteira
-- [ ] Dry-run/plan-only com simulacao de efeitos e approvals previstos
-- [ ] Modo shadow: observar acoes do usuario e sugerir automacoes sem executar
-- [ ] Session recorder: transformar uma sequencia manual em skill/script reutilizavel
-- [ ] Redaction layer para screenshots, logs e tool results antes de persistir ou exibir
+- [ ] Visual timeline per run with task graph, events, approvals, retries and optional screenshots
+- [ ] Granular pause/resume per task or branch, not just per entire run
+- [ ] Dry-run/plan-only with effect simulation and predicted approvals
+- [ ] Shadow mode: observe user actions and suggest automations without executing
+- [ ] Session recorder: transform a manual sequence into a reusable skill/script
+- [ ] Redaction layer for screenshots, logs and tool results before persisting or displaying
 
-#### Robustez para automacoes longas
+#### Long-running automation robustness
 
-Automacoes reais podem durar minutos ou horas e atravessar rede instavel, apps travados e reinicios.
+Real automations can last minutes or hours and cross unstable networks, frozen apps and restarts.
 
-- [ ] Heartbeat por tool longa e progresso incremental padronizado
-- [ ] Watchdog de janela travada/processo sem resposta com recovery especifico
-- [ ] Checkpoint por branch de task graph, incluindo resultados intermediarios grandes
-- [ ] Resume idempotente: evitar repetir mutacoes ja aplicadas apos crash
-- [ ] Rollback plan por task mutante quando houver artefatos ou estado anterior conhecido
-- [ ] Quotas por run: limite de CPU, memoria, arquivos tocados, processos abertos e downloads
+- [ ] Heartbeat per long tool and standardized incremental progress
+- [ ] Frozen window/unresponsive process watchdog with specific recovery
+- [ ] Checkpoint per task graph branch, including large intermediate results
+- [ ] Idempotent resume: avoid repeating mutations already applied after crash
+- [ ] Rollback plan per mutating task when artifacts or known prior state exist
+- [ ] Per-run quotas: CPU, memory, files touched, open processes and downloads limits
 
-#### Retry inteligente com re-inject de erros de validacao
+#### Intelligent retry with validation error re-injection
 
-Quando uma tool call falha por validacao (ex: campo `content` faltando), o sistema gasta um step inteiro
-para o LLM ver o erro e tentar de novo. Um middleware que intercepta e re-injeta automaticamente seria mais eficiente:
+When a tool call fails due to validation (e.g.: missing `content` field), the system wastes an entire step for the LLM to see the error and try again. A middleware that intercepts and re-injects automatically would be more efficient:
 
-- [ ] Middleware pre-execution que valida argumentos antes de gastar o step
-- [ ] Re-inject automatico do erro com contexto ("campo content e obrigatorio, re-gere incluindo o conteudo")
-- [ ] Limite de re-injects por step (evitar loop infinito)
-- [ ] Metricas de taxa de re-inject por tool (identificar tools com schema confuso para o LLM)
+- [ ] Pre-execution middleware that validates arguments before spending the step
+- [ ] Automatic error re-injection with context ("content field is required, re-generate including the content")
+- [ ] Re-injection limit per step (avoid infinite loops)
+- [ ] Re-injection rate metrics per tool (identify tools with confusing schemas for the LLM)
 
-#### Model routing por complexidade
+#### Model routing by complexity
 
-O mesmo modelo (claude-sonnet-4-6) e usado para "ola" e para "instale drivers da rede".
-Um router inteligente economizaria custo e latencia direcionando tasks simples para modelos rapidos:
+The same model (claude-sonnet-4-6) is used for "hello" and for "install network drivers". An intelligent router would save cost and latency by directing simple tasks to fast models:
 
-- [ ] Classificador de complexidade (trivial, simples, complexo, multi-step)
-- [ ] Pool de modelos: rapido/barato (haiku/gpt-4o-mini) para trivial, completo para complexo
-- [ ] Fallback automatico: se modelo rapido falha, escalar para modelo completo
-- [ ] Metricas de custo por run com breakdown por modelo usado
+- [ ] Complexity classifier (trivial, simple, complex, multi-step)
+- [ ] Model pool: fast/cheap (haiku/gpt-4o-mini) for trivial, full for complex
+- [ ] Automatic fallback: if fast model fails, escalate to full model
+- [ ] Cost metrics per run with breakdown by model used
 
-#### Streaming e feedback em tempo real
+#### Streaming and real-time feedback
 
-O usuario nao ve nada ate a run inteira acabar ou falhar. Streaming de progresso daria mais confianca:
+The user sees nothing until the entire run finishes or fails. Progress streaming would build more confidence:
 
-- [ ] SSE/WebSocket com streaming de events (task_planned, task_started, thinking)
-- [ ] Streaming de texto parcial do LLM (mostrar o que o agente esta pensando)
-- [ ] Progress bar por fase do grafo (planner -> executor -> reflection)
-- [ ] Notificacoes de recovery ("tool falhou, tentando alternativa...")
+- [ ] SSE/WebSocket with event streaming (task_planned, task_started, thinking)
+- [ ] Partial LLM text streaming (show what the agent is thinking)
+- [ ] Progress bar per graph phase (planner -> executor -> reflection)
+- [ ] Recovery notifications ("tool failed, trying alternative...")
 
-#### Memoria conversacional cross-run
+#### Cross-run conversational memory
 
-Cada run e independente — se o usuario diz "faz de novo mas com 5 emails", o agente nao sabe o que "de novo" significa.
-Um conversation buffer persistido entre runs permitiria continuidade:
+Each run is independent — if the user says "do it again but with 5 emails", the agent doesn't know what "again" means. A conversation buffer persisted across runs would enable continuity:
 
-- [ ] Conversation buffer em SQLite (ultimas N mensagens por sessao)
-- [ ] Resolucao de referencias ("de novo" = ultima task, "aquele arquivo" = ultimo path usado)
-- [ ] Contexto de sessao injetado no system prompt (resumo das ultimas interacoes)
-- [ ] TTL por sessao (limpar contexto apos inatividade)
+- [ ] Conversation buffer in SQLite (last N messages per session)
+- [ ] Reference resolution ("again" = last task, "that file" = last path used)
+- [ ] Session context injected into system prompt (summary of last interactions)
+- [ ] TTL per session (clear context after inactivity)
 
-#### Constrained decoding e schema enforcement
+#### Constrained decoding and schema enforcement
 
-Garantir que o LLM sempre gere tool calls com todos os campos obrigatorios,
-em vez de validar depois e desperdicar steps:
+Ensure the LLM always generates tool calls with all required fields, instead of validating afterwards and wasting steps:
 
-- [ ] JSON schema enforcement na geracao (guided decoding onde o provider suportar)
-- [ ] Pre-validacao client-side dos argumentos antes de aceitar o tool call
-- [ ] Template de argumentos obrigatorios injetado no prompt por tool
-- [ ] Metricas de compliance por tool (quais tools o LLM mais erra)
+- [ ] JSON schema enforcement in generation (guided decoding where the provider supports it)
+- [ ] Client-side pre-validation of arguments before accepting the tool call
+- [ ] Required argument template injected into the prompt per tool
+- [ ] Compliance metrics per tool (which tools the LLM gets wrong most often)
 
 ---
 
-## Manifesto PHYLUM: A Alianca pela Soberania Digital
+## PHYLUM Manifesto: The Alliance for Digital Sovereignty
 
-### 1. O Codigo e o Destino, a Propriedade e sua.
+### 1. Code is Destiny, Ownership is Yours.
 
-Acreditamos que a inteligencia artificial nao deve ser um cercado murado controlado por poucos. Se a IA vai gerir nossas vidas digitais, ela deve ser auditavel, local e livre. O PHYLUM e o seu territorio soberano dentro do Windows.
+We believe that artificial intelligence should not be a walled garden controlled by the few. If AI is going to manage our digital lives, it must be auditable, local and free. PHYLUM is your sovereign territory within Windows.
 
-### 2. Privacidade nao e um Ajuste, e o Padrao.
+### 2. Privacy is Not a Setting, It's the Default.
 
-Dados sao a extensao da mente humana. No PHYLUM, o processamento e local-first. Seus documentos, senhas e rotinas nunca alimentam modelos de terceiros. A privacidade e protegida pela fisica do seu hardware, nao por termos de servico mutaveis.
+Data is an extension of the human mind. In PHYLUM, processing is local-first. Your documents, passwords and routines never feed third-party models. Privacy is protected by the physics of your hardware, not by mutable terms of service.
 
-### 3. Inteligencia Coletiva via P2P.
+### 3. Collective Intelligence via P2P.
 
-Nenhum usuario deve ensinar a mesma coisa a maquina duas vezes. Criamos um Sistema Imunologico Digital onde cada descoberta de automacao e cada correcao de seletor e compartilhada de forma anonima e descentralizada. Se um PHYLUM aprende, todos os PHYLUMs evoluem.
+No user should have to teach the same thing to the machine twice. We are building a Digital Immune System where every automation discovery and every selector fix is shared anonymously and in a decentralized manner. If one PHYLUM learns, all PHYLUMs evolve.
 
-### 4. A Economia da Colaboracao (DePIN).
+### 4. The Economy of Collaboration (DePIN).
 
-O processamento de IA e o petroleo do seculo XXI. Atraves do PHYLUM, transformamos hardware ocioso em ativos. Ao fornecer poder computacional para a rede, voce e recompensado. O objetivo e uma rede auto-sustentavel onde a automacao de alta performance se paga, democratizando o acesso a modelos de ponta sem depender de cartoes de credito ou assinaturas abusivas.
+AI processing is the oil of the 21st century. Through PHYLUM, we transform idle hardware into assets. By providing computational power to the network, you are rewarded. The goal is a self-sustaining network where high-performance automation pays for itself, democratizing access to cutting-edge models without relying on credit cards or abusive subscriptions.
 
-### 5. Fim do Silo, Inicio da Orquestracao.
+### 5. End of the Silo, Beginning of Orchestration.
 
-Nao aceitamos ser refens de ecossistemas fechados. O PHYLUM nasceu para ser o tradutor universal entre softwares, APIs e intencoes humanas. Se existe uma ferramenta, o PHYLUM deve saber opera-la. Se nao existe, o PHYLUM deve saber cria-la.
+We refuse to be hostages of closed ecosystems. PHYLUM was born to be the universal translator between software, APIs and human intentions. If a tool exists, PHYLUM must know how to operate it. If it doesn't exist, PHYLUM must know how to create it.
 
-### Pilares do Futuro (Roadmap de Descentralizacao)
+### Pillars of the Future (Decentralization Roadmap)
 
-- **Global Strategy Mesh**: banco de dados P2P de grafos de execucao e Strategy Records validados por reputacao.
-- **Neural Marketplace**: troca descentralizada de tokens por inferencia. Forneca VRAM, receba tokens; use tokens para acessar modelos que seu hardware local nao suporta.
-- **Privacy-Safe Learning**: protocolos de conhecimento que compartilham a logica da tarefa sem expor o conteudo dos dados.
-- **Anti-Fragile Governance**: um sistema onde a evolucao do codigo e das ferramentas e ditada pelo sucesso real na maquina dos usuarios, nao pelo lucro de acionistas.
-
----
-
-## Documentacao complementar
-
-- `README_PROJECT.md` — panorama tecnico completo do runtime e arquitetura
-- `README_SETUP.md` — setup local, CI e troubleshooting
+- **Global Strategy Mesh**: P2P database of execution graphs and Strategy Records validated by reputation.
+- **Neural Marketplace**: decentralized token exchange for inference. Provide VRAM, receive tokens; use tokens to access models your local hardware cannot support.
+- **Privacy-Safe Learning**: knowledge protocols that share task logic without exposing data content.
+- **Anti-Fragile Governance**: a system where the evolution of code and tools is driven by real success on users' machines, not by shareholder profit.
 
 ---
 
-## Licenca
+## Supplementary documentation
 
-PHYLUM e software livre distribuido sob a **GNU General Public License v3.0** (GPLv3).
-Veja o arquivo [LICENSE](LICENSE) para o texto completo.
+- `README_PROJECT.md` — complete technical overview of the runtime and architecture
+- `README_SETUP.md` — local setup, CI and troubleshooting
+
+---
+
+## License
+
+PHYLUM is free software distributed under the **GNU General Public License v3.0** (GPLv3).
+See the [LICENSE](LICENSE) file for the full text.
 
 Copyright (C) 2026 Aguilar.
 
 ---
 
-## Direcao do projeto
+## Project direction
 
-Construir um runtime agentico local-first que opere no Windows como um operador humano experiente: usando APIs nativas, tools tipadas, approvals claros, runtime duravel e aprendizado continuo. Codigo aberto, sem dependencia de cloud proprietario, sem telemetria.
+Build a local-first agentic runtime that operates on Windows like an experienced human operator: using native APIs, typed tools, clear approvals, durable runtime and continuous learning. Open-source, no proprietary cloud dependency, no telemetry.
 
-Principios:
+Principles:
 
-- **Local-first**: seus dados ficam na sua maquina, sempre
-- **Open-source**: codigo auditavel, contribuicoes bem-vindas
-- **Autonomia crescente**: menos fallback precoce, mais resolucao proativa
-- **Zero pixel automation**: APIs nativas como espinha dorsal
-- **Aprendizado real**: cada run melhora o world model e strategy memory
-- **Durabilidade**: o sistema sobrevive crashes, restarts e interrupcoes
-- **Transparencia**: cada decisao e rastreavel, cada acao e auditavel
+- **Local-first**: your data stays on your machine, always
+- **Open-source**: auditable code, contributions welcome
+- **Growing autonomy**: less premature fallback, more proactive resolution
+- **Zero pixel automation**: native APIs as the backbone
+- **Real learning**: each run improves the world model and strategy memory
+- **Durability**: the system survives crashes, restarts and interruptions
+- **Transparency**: every decision is traceable, every action is auditable
