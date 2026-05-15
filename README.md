@@ -60,8 +60,9 @@ These capabilities have graduated from the roadmap and are part of PHYLUM's curr
 
 - **State Graph with subtask DAG**: the pipeline is driven by a state graph and, within the local runtime, subtasks use a real dependency graph via `depends_on`, with cycle detection, parallel branches, safe speculative execution for reads and partial completion.
 - **Reasoning/execution layer separation**: `CognitiveLayer` handles planning, LLM loop and strategy decisions; `OperationalLayer` handles task graph, recovery and graph executors; `ExecutionLayer` runs tools, safety, reflection and desktop automation; `StateLayer` handles persistence, World Model, Strategy Memory, durable queue and sessions.
-- **Layer contracts (Protocol interfaces)**: `layer_contracts.py` defines `@runtime_checkable` Protocols per layer so callers depend on interfaces, not implementations; `RuntimeManager` types layers as `CognitiveLayerProtocol`, etc.; contract tests verify conformance, stub substitutability, forbidden cross-imports and acyclic dependency rules.
+- **Layer contracts (Protocol interfaces)**: `layer_contracts.py` defines `@runtime_checkable` Protocols per layer (`CognitiveLayerProtocol`, `OperationalLayerProtocol`, `ExecutionLayerProtocol`, `StateLayerProtocol`); `RuntimeManager` depends on interfaces, not implementations; `tests/test_layer_contracts.py` verifies conformance, stub substitutability, forbidden cross-imports and acyclic dependency direction.
 - **Architectural invariants (CI)**: nine documented invariants (`INV-01`…`INV-09`) in `architecture_invariants.py` — layer protocol conformance, module import boundaries, acyclic dependencies, typed `RuntimeManager` fields; enforced on every CI run via `python core/architecture_invariants.py` and `pytest -m architecture`.
+- **Golden tasks and domain benchmarks**: `evaluation/golden_tasks/` (17 representative tasks with fixtures), `evaluation/golden_runner.py`, `evaluation/benchmark_domains.py` (8 domains: Office, filesystem, browser, Windows UI, drivers, documents, web research); `pytest -m golden` / `pytest -m benchmark`; `scripts/run_golden_benchmarks.ps1`.
 - **Parallel tool calls**: when the LLM emits multiple independent tool calls in the same turn, the agentic loop executes them in parallel via `asyncio.gather`, preserving the original order of results in the message history.
 - **Parallel sub-agents**: `subagent.run_parallel_branches` creates isolated branches with a specific objective, its own budget for steps/timeout/tools/tokens/cost, result merging and cascading cancellation when a branch satisfies the objective.
 - **Anthropic extended thinking**: Claude models with thinking receive `thinking: adaptive`, extended timeout, thinking block persistence and `agent_thinking` events for observability.
@@ -90,6 +91,8 @@ These capabilities have graduated from the roadmap and are part of PHYLUM's curr
 - **Persistent codebase map**: `CodebaseMap` with AST-based Python scanner, regex-based JS/TS/config scanner, SQLite-backed storage, incremental/full scan, and query API for symbols, imports, routes, tests, configs and ownership per file.
 - **Test diagnostic loop**: `TestDiagnosticLoop` orchestrates run → interpret → patch → rerun → expand cycle with `TestRunner`, `FailureInterpreter` and `RegressionExpander` for pytest/jest.
 - **Patch planner**: `PatchPlanner` decomposes large changes by files/owners with risk scoring (`RiskAssessor`), topological ordering (`DependencyOrderer` via Kahn's algorithm) and CODEOWNERS integration (`OwnerResolver`).
+- **Workspace awareness**: `workspace_dev.detect_context` reports git branch/dirty state, venv, open IDEs, task runners (`package.json`, `Makefile`, `pyproject.toml`, etc.), listening dev ports and related dev processes.
+- **Refactor guardrails**: `workspace_dev.set_scope` limits edits to target files/globs; `check_changes` / `validate_path` flag unrelated files; active scope blocks `filesystem` mutations outside scope.
 - **Heartbeat and incremental progress**: `HeartbeatEmitter` for periodic async heartbeats during long tools, `ProgressTracker` for multi-phase progress with ETA estimation, both integrated with the event bus.
 - **Process watchdog**: `ProcessWatchdog` and `FrozenWindowDetector` monitor processes/windows for unresponsiveness via Win32 `IsHungAppWindow`/`SendMessageTimeout`, with configurable recovery actions (retry_message, close_graceful, kill, restart).
 - **Contextual boosting**: search results are re-ranked by task domain (e.g. "office" boosts `document_alias` by 0.25 over `share`/`device`), with a configurable boost map for 11 task categories.
@@ -467,6 +470,7 @@ The backend exposes endpoints to verify operational readiness:
 | `test_skill_evaluation_marketplace.py` | Skill evaluation gate, offline marketplace import/export |
 | `test_codebase_map.py` | CodebaseMap, PythonScanner, PatternScanner, incremental updates |
 | `test_diagnostic_and_planner.py` | TestDiagnosticLoop, PatchPlanner, RiskAssessor, DependencyOrderer |
+| `test_workspace_dev.py` | Workspace awareness snapshot, refactor scope and filesystem guardrails |
 | `test_heartbeat_watchdog.py` | HeartbeatEmitter, ProgressTracker, ProcessWatchdog, FrozenWindowDetector |
 | `test_hung_process_reaper.py` | Hung process reaper, target context, IsHungAppWindow integration |
 | `test_contextual_boost_crossref.py` | Contextual boosting, cross-reference linking, graph traversal |
@@ -475,6 +479,10 @@ The backend exposes endpoints to verify operational readiness:
 | `test_context_window.py` | ContextWindowManager, compression, emergency drop |
 | `test_multi_provider_client.py` | LLM API retry, Anthropic message merging, LLMApiError |
 | `test_dependency_install.py` | Missing module detection, module→package mapping, recovery classification, approval flow |
+| `test_layer_contracts.py` | Layer Protocol conformance, forbidden imports, dependency direction |
+| `test_architecture_invariants.py` | INV-01…INV-09 architectural invariant enforcement |
+| `test_golden_tasks.py` | Golden task suite loader and runner |
+| `test_domain_benchmarks.py` | Per-domain benchmark aggregation |
 | Others (26 suites) | Runtime, providers, shell, filesystem, network, planner, reflection, downloads, extended thinking, parallel calls, agentic discovery, persistence, and more |
 
 ---
@@ -482,14 +490,6 @@ The backend exposes endpoints to verify operational readiness:
 ## Future roadmap
 
 ### Next evolutions
-
-#### Architectural governance
-
-The system already has ~30 modules with distinct responsibilities. The biggest risk is uncontrolled complexity.
-
-- [x] Clear contracts between layers (interfaces, not implementations) — `layer_contracts.py` defines `Protocol` interfaces per layer (`CognitiveLayerProtocol`, `OperationalLayerProtocol`, `ExecutionLayerProtocol`, `StateLayerProtocol`)
-- [x] Explicit boundaries between modules with contract tests — `tests/test_layer_contracts.py` verifies protocol conformance, stub substitutability, forbidden imports, and dependency direction
-- [x] Architectural invariants documented and enforced by CI — `core/architecture_invariants.py` (INV-01…INV-09); `python core/architecture_invariants.py` locally; CI step runs checker + `pytest -m architecture`
 
 #### Sandbox hardening (remaining)
 
@@ -499,28 +499,13 @@ Automatic dependency detection, approval-gated install, capability isolation and
 - [ ] Provenance (track origin of each script: who generated it, why, when)
 - [ ] Audit trails (complete log of inputs and outputs)
 
-#### Operational skills library (remaining)
-
-Skill manifest, registry, runner, objective discovery, signing, provenance, evaluation gate and offline marketplace are implemented. What's still missing:
-
 #### Workspace development automation (remaining)
 
-Codebase map, test diagnostic loop and patch planner are implemented. What's still missing:
+Codebase map, test diagnostic loop, patch planner, workspace awareness and refactor guardrails are implemented. What's still missing:
 
-- [ ] Workspace awareness: detect open IDE, branch, venv, task runner, dev ports and related processes
-- [ ] Refactor guardrails: prevent out-of-scope edits and detect accidental changes to unrelated files
 - [ ] Engineering report per run: files touched, commands executed, tests run, remaining risks
 
 ### Advanced capabilities (next level)
-
-#### Continuous automation evaluation
-
-Agentic automation systems need to measure whether they improve or degrade over time.
-
-- [x] Local golden tasks: suite of representative tasks with fixtures and expected outcomes — `evaluation/golden_tasks/` (17 tasks, JSON + fixtures); `python evaluation/golden_runner.py --skip-requires`; `pytest -m golden`
-- [x] Benchmarks by domain: Office, filesystem, browser, Windows UI, drivers, documents and web research — `evaluation/benchmark_domains.py` (8 domains); `pytest -m benchmark`; `scripts/run_golden_benchmarks.ps1`
-- [x] Regression replay: re-execute old runs in dry-run mode to compare plan, cost and result — `regression_replay.py`; `execution_economics.replay_regression` / `list_replayable_runs`; dry-run validates tasks without mutations
-- [x] Confidence score per tool/action based on real success history — `tool_action_confidence.py` (Beta posterior); auto-recorded in `_record_task_observation`; `get_tool_confidence` / `list_tool_confidences` / `plan_tool_confidence`
 
 #### Desktop session observability and control
 

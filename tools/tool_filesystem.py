@@ -120,6 +120,16 @@ class FileSystemTool(BaseTool):
                 allow_outside_sandbox=payload.allow_outside_sandbox,
             ):
                 raise ValueError('dest not allowed by sandbox or run filesystem scope')
+        try:
+            from refactor_guardrails import check_mutation_allowed
+
+            ok, reason = check_mutation_allowed(
+                payload.path, payload.action, dest=payload.dest,
+            )
+            if not ok:
+                raise ValueError(reason)
+        except ImportError:
+            pass
 
     async def _read(self, path: Path) -> str:
         return await asyncio.to_thread(path.read_text, encoding='utf-8', errors='ignore')

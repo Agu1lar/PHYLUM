@@ -34,6 +34,7 @@ from tool_codebase_map import CodebaseMapTool
 from tool_execution_economics import ExecutionEconomicsTool
 from tool_test_diagnostic import TestDiagnosticTool
 from tool_patch_planner import PatchPlannerTool
+from tool_workspace_dev import WorkspaceDevTool
 from tool_heartbeat import HeartbeatTool
 from tool_windows_ui import WindowsUiTool
 
@@ -75,6 +76,7 @@ class ToolRegistry:
             "execution_economics": ExecutionEconomicsTool(),
             "test_diagnostic": TestDiagnosticTool(),
             "patch_planner": PatchPlannerTool(),
+            "workspace_dev": WorkspaceDevTool(),
             "heartbeat": HeartbeatTool(),
         }
 

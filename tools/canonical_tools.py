@@ -32,6 +32,7 @@ SUPPORTED_TOOL_NAMES = [
     "execution_economics",
     "test_diagnostic",
     "patch_planner",
+    "workspace_dev",
     "heartbeat",
 ]
 
@@ -304,6 +305,15 @@ ACTION_METADATA: Dict[str, Dict[str, Any]] = {
         "plan": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "create_patch_plan"},
         "assess_risk": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "assess_change_risk"},
         "order_changes": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "order_changes"},
+    },
+    "workspace_dev": {
+        "detect_context": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["workspace"], "effect_kind": "detect_workspace_context"},
+        "set_scope": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["workspace", "target_files"], "effect_kind": "set_refactor_scope"},
+        "get_scope": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "get_refactor_scope"},
+        "clear_scope": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "effect_kind": "clear_refactor_scope"},
+        "validate_path": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["path", "paths"], "effect_kind": "validate_refactor_path"},
+        "check_changes": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "check_refactor_changes"},
+        "audit_touches": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "audit_refactor_touches"},
     },
     "heartbeat": {
         "start_heartbeat": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["tool_name", "run_id"], "effect_kind": "start_heartbeat"},
@@ -1122,6 +1132,61 @@ def tool_definitions() -> List[Dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "workspace_dev",
+                "description": "Workspace development context and refactor guardrails. detect_context: IDE, git branch, venv, task runners, dev ports and related processes. set_scope/check_changes/validate_path: limit edits to target files and detect unrelated changes; filesystem writes are blocked when scope is active.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": [
+                                "detect_context", "set_scope", "get_scope", "clear_scope",
+                                "validate_path", "check_changes", "audit_touches",
+                            ],
+                        },
+                        "workspace": {"type": "string", "description": "Workspace root path"},
+                        "target_files": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Files allowed to edit (relative paths)",
+                        },
+                        "allowed_globs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Glob patterns allowed (e.g. core/*.py)",
+                        },
+                        "allowed_directories": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Directories allowed for edits",
+                        },
+                        "description": {"type": "string", "description": "Scope description for audit"},
+                        "strict": {"type": "boolean", "description": "Block paths outside scope (default true)"},
+                        "allow_tests": {"type": "boolean", "description": "Allow test files for target modules"},
+                        "allow_same_package": {"type": "boolean", "description": "Allow files in same package as targets"},
+                        "path": {"type": "string", "description": "Single path to validate"},
+                        "paths": {"type": "array", "items": {"type": "string"}, "description": "Paths to validate or audit"},
+                        "changes": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "dest": {"type": "string"},
+                                    "change_type": {"type": "string"},
+                                },
+                            },
+                            "description": "Proposed file changes to check against scope",
+                        },
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "heartbeat",
                 "description": "Heartbeat, incremental progress and process watchdog. Start/stop periodic heartbeats for long-running tools, track multi-phase progress with ETA, and monitor processes/windows for frozen/unresponsive state with automatic recovery (retry message, graceful close, kill, restart).",
                 "parameters": {
@@ -1350,6 +1415,9 @@ def task_title(tool: str, action: str, params: Dict[str, Any]) -> str:
         return f"Test Diagnostic {action.replace('_', ' ').title()} {detail}".strip()
     if tool == "patch_planner":
         return f"Patch {action.replace('_', ' ').title()}"
+    if tool == "workspace_dev":
+        detail = params.get("workspace") or params.get("path") or ""
+        return f"Workspace {action.replace('_', ' ').title()} {detail}".strip()
     if tool == "heartbeat":
         detail = params.get("tool_name") or params.get("target_key") or ""
         return f"Heartbeat {action.replace('_', ' ').title()} {detail}".strip()
@@ -1552,6 +1620,18 @@ def normalize_agentic_task(tool_name: str, arguments: Dict[str, Any], task_id: s
             key: value
             for key, value in arguments.items()
             if key in {"changes"}
+            and value is not None
+        }
+    elif tool_name == "workspace_dev":
+        action = arguments.get("action")
+        params = {
+            key: value
+            for key, value in arguments.items()
+            if key in {
+                "workspace", "target_files", "allowed_globs", "allowed_directories",
+                "description", "strict", "allow_tests", "allow_same_package",
+                "path", "paths", "changes",
+            }
             and value is not None
         }
     elif tool_name == "heartbeat":
