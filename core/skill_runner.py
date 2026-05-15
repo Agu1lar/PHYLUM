@@ -39,6 +39,7 @@ from skill_manifest import (
     compute_code_checksum,
 )
 from skill_registry import SkillRegistry
+from skill_signing import SkillTrustStatus
 from skill_sandbox import (
     CapabilityDeclaration,
     SkillSandbox,
@@ -53,6 +54,10 @@ class SkillExecutionError(Exception):
 
 class SkillPermissionError(SkillExecutionError):
     pass
+
+
+class SkillTrustReviewRequired(SkillExecutionError):
+    """Skill failed trust/signature checks and requires review before execution."""
 
 
 class SkillValidationError(SkillExecutionError):
@@ -186,6 +191,7 @@ class SkillRunner:
         *,
         timeout: Optional[int] = None,
         skip_integrity_check: bool = False,
+        skip_evaluation_check: bool = False,
     ) -> SkillResult:
         """Execute a registered skill by name with full sandbox enforcement."""
         params = params or {}
@@ -243,7 +249,38 @@ class SkillRunner:
                 capability_declaration=declaration.to_dict(),
             )
 
-        # --- Step 4: Load and verify code ---
+        # --- Step 4: Trust, signature and code integrity ---
+        if not skip_integrity_check:
+            trust = self.registry.verify_trust(skill_name)
+            if not trust.get("ok"):
+                reason = trust.get("reason", "unknown")
+                messages = {
+                    "code_altered": (
+                        "Skill code was altered after registration. "
+                        "Run skill.verify and skill.approve_trust after review, or re-register."
+                    ),
+                    "quarantined": (
+                        "Skill is quarantined due to integrity failure. "
+                        "Review changes and call skill.approve_trust before executing."
+                    ),
+                    "untrusted": (
+                        "Skill was imported without a valid local signature. "
+                        "Call skill.approve_trust after reviewing the code."
+                    ),
+                    "invalid_signature": (
+                        "Skill bundle signature is invalid. "
+                        "Re-register or approve_trust after review."
+                    ),
+                }
+                return SkillResult(
+                    ok=False,
+                    error=messages.get(reason, f"Skill trust check failed: {reason}"),
+                    skill_name=manifest.name,
+                    skill_version=manifest.version,
+                    risk_level=manifest.effective_risk_level.value,
+                    capability_declaration=declaration.to_dict(),
+                )
+
         code = self.registry.get_code(skill_name)
         if code is None:
             return SkillResult(
@@ -256,6 +293,7 @@ class SkillRunner:
         if not skip_integrity_check:
             actual_checksum = compute_code_checksum(code)
             if manifest.checksum and actual_checksum != manifest.checksum:
+                self.registry._set_trust_status(skill_name, SkillTrustStatus.QUARANTINED)
                 return SkillResult(
                     ok=False,
                     error="Integrity check failed: code has been modified since registration",
@@ -264,6 +302,20 @@ class SkillRunner:
                     risk_level=manifest.effective_risk_level.value,
                     capability_declaration=declaration.to_dict(),
                 )
+
+        if not skip_evaluation_check and not self.registry.is_agent_available(skill_name):
+            status = self.registry.get_evaluation_status(skill_name)
+            return SkillResult(
+                ok=False,
+                error=(
+                    f"Skill '{skill_name}' is not agent-available (evaluation_status={status}). "
+                    "Add tests.json with minimum tests and run skill.evaluate before discover/execute."
+                ),
+                skill_name=manifest.name,
+                skill_version=manifest.version,
+                risk_level=manifest.effective_risk_level.value,
+                capability_declaration=declaration.to_dict(),
+            )
 
         # --- Step 4b: Static code analysis ---
         code_warnings = self.sandbox.scan_dangerous_patterns(code)

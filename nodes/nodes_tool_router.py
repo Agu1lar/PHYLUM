@@ -35,7 +35,8 @@ class ToolRouterNode(BaseNode):
 
     async def execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
         task = state["current_task"]
-        return await self.registry.execute(task, cancel_event=state.get("cancel_event"))
+        request_id = task.get("request_id")
+        return await self.registry.execute(task, cancel_event=state.get("cancel_event"), request_id=request_id)
 
     async def verify(self, state: Dict[str, Any], result: Dict[str, Any]) -> bool:
         action_result = result.get("action_result", {})

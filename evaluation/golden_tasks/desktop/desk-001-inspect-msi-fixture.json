@@ -1,0 +1,25 @@
+{
+  "id": "desk-001-inspect-msi-fixture",
+  "domain": "desktop",
+  "title": "Inspect MSI installer metadata",
+  "tags": ["smoke", "local"],
+  "requires": ["windows"],
+  "setup": [
+    {
+      "action": "write_text",
+      "path": "{{tmpdir}}/setup.msi",
+      "content": ""
+    }
+  ],
+  "steps": [
+    {
+      "tool": "desktop",
+      "action": "inspect_installer",
+      "params": { "path": "{{tmpdir}}/setup.msi" },
+      "expect": {
+        "status": "succeeded",
+        "data_contains": { "installer_type": "msi" }
+      }
+    }
+  ]
+}

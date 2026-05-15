@@ -1,0 +1,19 @@
+{
+  "id": "drv-001-find-driver-candidates",
+  "domain": "drivers",
+  "title": "Find driver download candidates for a query",
+  "tags": ["smoke", "local"],
+  "requires": [],
+  "steps": [
+    {
+      "tool": "driver_manager",
+      "action": "find_driver_candidates",
+      "params": { "query": "HP LaserJet P1102" },
+      "expect": {
+        "status": "succeeded",
+        "min_count": 1,
+        "count_field": "candidates"
+      }
+    }
+  ]
+}

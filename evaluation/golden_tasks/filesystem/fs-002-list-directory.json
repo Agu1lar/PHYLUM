@@ -1,0 +1,27 @@
+{
+  "id": "fs-002-list-directory",
+  "domain": "filesystem",
+  "title": "List directory after seed copy",
+  "tags": ["smoke", "local"],
+  "requires": [],
+  "setup": [
+    { "action": "mkdir", "path": "{{tmpdir}}/listed" },
+    {
+      "action": "copy_fixture",
+      "from": "filesystem/seed.txt",
+      "to": "{{tmpdir}}/listed/seed.txt"
+    }
+  ],
+  "steps": [
+    {
+      "tool": "filesystem",
+      "action": "list",
+      "params": { "path": "{{tmpdir}}/listed" },
+      "expect": {
+        "status": "succeeded",
+        "min_count": 1,
+        "count_field": "items"
+      }
+    }
+  ]
+}

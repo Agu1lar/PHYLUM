@@ -21,6 +21,11 @@ class SandboxInput(BaseModel):
     timeout: Optional[int] = Field(None, gt=0, le=300, description="Timeout in seconds")
     work_dir: Optional[str] = Field(None, description="Working directory override")
     input_files: Optional[Dict[str, str]] = Field(None, description="Files to create in sandbox before execution (name -> content)")
+    capabilities: Optional[list] = Field(
+        None,
+        description="Declared capabilities (e.g. filesystem:read, network:outbound, shell:run)",
+    )
+    request_id: Optional[str] = Field(None, description="Run id — use run filesystem scope as work_dir when work_dir omitted")
 
 
 class SandboxOutput(BaseModel):
@@ -43,11 +48,29 @@ class SandboxTool(BaseTool):
             raise ValueError(f"Unsupported sandbox action: {payload.action}")
 
     async def _run(self, payload: SandboxInput, cancel_event=None) -> SandboxOutput:
+        work_dir = payload.work_dir
+        if not work_dir and payload.request_id:
+            try:
+                from filesystem_scope import get_run_filesystem_scope, scope_from_state
+                from agent_persistence import Persistence
+
+                scope = get_run_filesystem_scope()
+                if scope is None:
+                    raw = await Persistence.get().get_kv(f"state:{payload.request_id}")
+                    if isinstance(raw, dict):
+                        scope = scope_from_state(raw)
+                if scope is not None:
+                    work_dir = scope.sandbox_dir
+            except Exception:
+                logger.debug("Could not resolve run filesystem scope for sandbox", exc_info=True)
+
         kwargs = {
             "timeout": payload.timeout,
-            "work_dir": payload.work_dir,
+            "work_dir": work_dir,
             "cancel_event": cancel_event,
             "input_files": payload.input_files,
+            "capabilities": payload.capabilities,
+            "script_id": payload.request_id,
         }
 
         if payload.action == "execute_python":

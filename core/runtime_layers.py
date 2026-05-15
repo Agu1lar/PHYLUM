@@ -4,17 +4,28 @@
 """Explicit runtime layers.
 
 The RuntimeManager remains the facade used by the API/UI, but these layer
-objects make architectural responsibilities explicit and testable:
+objects make architectural responsibilities explicit and testable.
 
-- CognitiveLayer: planning, LLM loop, strategy decisions.
-- OperationalLayer: task graph scheduling, recovery and graph executors.
-- ExecutionLayer: actual tool execution and desktop/UI automation adapters.
-- StateLayer: persistence, world model and strategy memory.
+Each concrete layer class satisfies the corresponding Protocol in
+``layer_contracts`` (see ``tests/test_layer_contracts.py``):
+
+- CognitiveLayer / CognitiveLayerProtocol — planning, LLM loop, strategy.
+- OperationalLayer / OperationalLayerProtocol — graphs, recovery, scheduling.
+- ExecutionLayer / ExecutionLayerProtocol — tool execution and desktop adapters.
+- StateLayer / StateLayerProtocol — persistence, world model, strategy memory.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from layer_contracts import (
+        CognitiveLayerProtocol,
+        ExecutionLayerProtocol,
+        OperationalLayerProtocol,
+        StateLayerProtocol,
+    )
 
 from agentic_loop import AgenticLoop
 from credential_store import CredentialStore

@@ -1,0 +1,17 @@
+{
+  "id": "off-002-validation-missing-path",
+  "domain": "office",
+  "title": "Office tool rejects word_find_text without path",
+  "tags": ["local"],
+  "requires": [],
+  "handler": "office.validate",
+  "handler_args": {
+    "payload": {
+      "action": "word_find_text",
+      "query": "invoice"
+    }
+  },
+  "expect": {
+    "field_equals": { "validation_error": "contains:path" }
+  }
+}

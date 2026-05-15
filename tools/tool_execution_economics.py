@@ -27,7 +27,11 @@ class ExecutionEconomicsRequest(BaseModel):
         ...,
         pattern="^(create_tracker|record_step|record_llm_usage|get_summary|"
                 "check_budget|analyze_complexity|evaluate_stopping|"
-                "rank_strategies|compare_routes|best_route)$",
+                "rank_strategies|compare_routes|best_route|"
+                "record_tool_outcome|get_tool_confidence|list_tool_confidences|"
+                "plan_tool_confidence|replay_regression|list_replayable_runs|"
+                "get_autonomy_metrics|list_autonomy_metrics|get_quality_dashboard|"
+                "list_quality_versions)$",
     )
     run_id: Optional[str] = None
     model: Optional[str] = None
@@ -56,10 +60,20 @@ class ExecutionEconomicsRequest(BaseModel):
     # complexity analysis
     steps: Optional[List[Dict[str, Any]]] = None
     branch_count: Optional[int] = None
+    # tool confidence / regression replay
+    request_id: Optional[str] = None
+    replan: bool = True
+    validate_tasks: bool = True
+    min_samples: Optional[int] = None
+    limit: Optional[int] = None
+    plan_steps: Optional[List[Dict[str, str]]] = None
+    runtime_mode: Optional[str] = None
+    provider: Optional[str] = None
 
 
 class ExecutionEconomicsTool(BaseTool):
     InputModel = ExecutionEconomicsRequest
+    OutputModel = ActionResult
 
     def __init__(self):
         super().__init__(default_timeout=30, default_retries=1)
@@ -67,6 +81,34 @@ class ExecutionEconomicsTool(BaseTool):
         self._complexity = PathComplexityAnalyzer()
         self._stopping = StoppingHeuristics()
         self._optimizer = RouteOptimizer()
+        self._confidence_store = None
+        self._replay_engine = None
+        self._autonomy_store = None
+        self._quality_dashboard = None
+
+    def _confidence(self):
+        if self._confidence_store is None:
+            from tool_action_confidence import ToolActionConfidenceStore
+            self._confidence_store = ToolActionConfidenceStore()
+        return self._confidence_store
+
+    def _replay(self):
+        if self._replay_engine is None:
+            from regression_replay import RegressionReplayEngine
+            self._replay_engine = RegressionReplayEngine(confidence_store=self._confidence())
+        return self._replay_engine
+
+    def _autonomy(self):
+        if self._autonomy_store is None:
+            from autonomy_metrics import AutonomyMetricsStore
+            self._autonomy_store = AutonomyMetricsStore()
+        return self._autonomy_store
+
+    def _quality(self):
+        if self._quality_dashboard is None:
+            from quality_dashboard import QualityDashboard
+            self._quality_dashboard = QualityDashboard()
+        return self._quality_dashboard
 
     def _get_tracker(self, run_id: str) -> Optional[CostTracker]:
         return self._trackers.get(run_id)
@@ -307,6 +349,170 @@ class ExecutionEconomicsTool(BaseTool):
                             f"(efficiency={best.efficiency_score:.4f})",
                     tool="execution_economics", action=action,
                     data=best.to_dict(),
+                )
+
+            if action == "record_tool_outcome":
+                if not payload.tool or not payload.tool_action or not payload.status:
+                    return ActionResult(
+                        status="failed",
+                        summary="'tool', 'tool_action' and 'status' are required",
+                        tool="execution_economics",
+                        action=action,
+                    )
+                conf = await self._confidence().record_outcome(
+                    payload.tool,
+                    payload.tool_action,
+                    payload.status,
+                    duration_ms=payload.duration_ms,
+                )
+                return ActionResult(
+                    status="succeeded",
+                    summary=f"Recorded outcome for {payload.tool}.{payload.tool_action}",
+                    tool="execution_economics",
+                    action=action,
+                    data=conf.to_dict(),
+                )
+
+            if action == "get_tool_confidence":
+                if not payload.tool or not payload.tool_action:
+                    return ActionResult(
+                        status="failed",
+                        summary="'tool' and 'tool_action' are required",
+                        tool="execution_economics",
+                        action=action,
+                    )
+                conf = await self._confidence().get_confidence(payload.tool, payload.tool_action)
+                return ActionResult(
+                    status="succeeded",
+                    summary=f"Confidence {conf.confidence:.2f} for {payload.tool}.{payload.tool_action} ({conf.sample_size} samples)",
+                    tool="execution_economics",
+                    action=action,
+                    data=conf.to_dict(),
+                )
+
+            if action == "list_tool_confidences":
+                items = await self._confidence().list_confidences(
+                    tool=payload.tool,
+                    min_samples=int(payload.min_samples or 0),
+                    limit=int(payload.limit or 200),
+                )
+                return ActionResult(
+                    status="succeeded",
+                    summary=f"Listed {len(items)} tool/action confidence scores",
+                    tool="execution_economics",
+                    action=action,
+                    data={"items": [c.to_dict() for c in items]},
+                )
+
+            if action == "plan_tool_confidence":
+                steps = payload.plan_steps or []
+                pairs = [(s.get("tool", ""), s.get("action", "")) for s in steps if s.get("tool")]
+                summary = await self._confidence().plan_confidence(pairs)
+                return ActionResult(
+                    status="succeeded",
+                    summary=f"Plan confidence avg={summary['average']:.2f} min={summary['minimum']:.2f}",
+                    tool="execution_economics",
+                    action=action,
+                    data=summary,
+                )
+
+            if action == "list_replayable_runs":
+                runs = await self._replay().list_replayable_runs(limit=int(payload.limit or 50))
+                return ActionResult(
+                    status="succeeded",
+                    summary=f"Found {len(runs)} replayable run(s)",
+                    tool="execution_economics",
+                    action=action,
+                    data={"runs": runs},
+                )
+
+            if action == "replay_regression":
+                if not payload.request_id:
+                    return ActionResult(
+                        status="failed",
+                        summary="'request_id' is required",
+                        tool="execution_economics",
+                        action=action,
+                    )
+                report = await self._replay().replay(
+                    payload.request_id,
+                    replan=bool(payload.replan),
+                    validate_tasks=bool(payload.validate_tasks),
+                )
+                return ActionResult(
+                    status="succeeded" if report.passed else "partial",
+                    summary=(
+                        f"Regression replay {'passed' if report.passed else 'found drift'} "
+                        f"for {payload.request_id}"
+                    ),
+                    tool="execution_economics",
+                    action=action,
+                    data=report.to_dict(),
+                )
+
+            if action == "get_autonomy_metrics":
+                rid = payload.request_id or payload.run_id
+                if not rid:
+                    return ActionResult(
+                        status="failed",
+                        summary="'request_id' is required",
+                        tool="execution_economics",
+                        action=action,
+                    )
+                metrics = await self._autonomy().get_run_metrics(rid)
+                if not metrics:
+                    return ActionResult(
+                        status="failed",
+                        summary=f"No autonomy metrics for {rid}",
+                        tool="execution_economics",
+                        action=action,
+                    )
+                return ActionResult(
+                    status="succeeded",
+                    summary=f"Autonomy metrics for {rid}: {metrics.steps_to_success} steps, {metrics.handoffs_total} handoffs",
+                    tool="execution_economics",
+                    action=action,
+                    data=metrics.to_dict(),
+                )
+
+            if action == "list_autonomy_metrics":
+                items = await self._autonomy().list_run_metrics(limit=int(payload.limit or 50))
+                return ActionResult(
+                    status="succeeded",
+                    summary=f"Listed {len(items)} run autonomy metric record(s)",
+                    tool="execution_economics",
+                    action=action,
+                    data={"items": [m.to_dict() for m in items]},
+                )
+
+            if action == "get_quality_dashboard":
+                summary = await self._quality().dashboard_summary(
+                    runtime_mode=payload.runtime_mode,
+                    provider=payload.provider,
+                    model=payload.model,
+                )
+                return ActionResult(
+                    status="succeeded",
+                    summary=f"Quality dashboard: {summary.get('version_count', 0)} version bucket(s)",
+                    tool="execution_economics",
+                    action=action,
+                    data=summary,
+                )
+
+            if action == "list_quality_versions":
+                versions = await self._quality().list_versions(limit=int(payload.limit or 100))
+                if payload.runtime_mode:
+                    versions = [v for v in versions if v.runtime_mode == payload.runtime_mode]
+                if payload.provider:
+                    versions = [v for v in versions if v.provider == payload.provider]
+                if payload.model:
+                    versions = [v for v in versions if v.model == payload.model]
+                return ActionResult(
+                    status="succeeded",
+                    summary=f"Listed {len(versions)} quality version aggregate(s)",
+                    tool="execution_economics",
+                    action=action,
+                    data={"versions": [v.to_dict() for v in versions]},
                 )
 
             return ActionResult(

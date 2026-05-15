@@ -1,0 +1,14 @@
+{
+  "id": "br-002-planner-routes-open-page",
+  "domain": "browser",
+  "title": "Planner routes open URL to browser tool",
+  "tags": ["local"],
+  "requires": [],
+  "handler": "planner.route",
+  "handler_args": {
+    "prompt": "open page https://example.com in chromium browser headless"
+  },
+  "expect": {
+    "field_equals": { "ok": true, "tool": "browser", "action": "open_page" }
+  }
+}

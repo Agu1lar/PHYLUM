@@ -49,6 +49,27 @@ def is_allowed_path_for_action(path_value: str, action: str) -> bool:
     return _is_allowed_path(Path(path_value))
 
 
+def is_path_allowed_for_run(
+    path_value: str,
+    action: str,
+    *,
+    allow_outside_sandbox: bool = False,
+) -> bool:
+    """Check global sandbox rules plus optional per-run filesystem scope."""
+    try:
+        from filesystem_scope import get_run_filesystem_scope
+
+        scope = get_run_filesystem_scope()
+        if scope is not None:
+            if scope.allows(path_value, action):
+                return True
+            if not allow_outside_sandbox:
+                return False
+    except ImportError:
+        pass
+    return is_allowed_path_for_action(path_value, action)
+
+
 class FSInput(BaseModel):
     action: str = Field(..., pattern='^(read|write|delete|move|mkdir|organize_directory|organize_downloads|organize_desktop|detect_duplicates|clean_temp|create_structure|undo|find_files|list|stat|copy)$')
     path: Optional[str] = None
@@ -72,8 +93,12 @@ class FileSystemTool(BaseTool):
 
     async def validate(self, payload: FSInput) -> None:
         if payload.path:
-            if not payload.allow_outside_sandbox and not is_allowed_path_for_action(payload.path, payload.action):
-                raise ValueError('path not allowed by sandbox')
+            if not is_path_allowed_for_run(
+                payload.path,
+                payload.action,
+                allow_outside_sandbox=payload.allow_outside_sandbox,
+            ):
+                raise ValueError('path not allowed by sandbox or run filesystem scope')
         if payload.action in ('write',) and payload.content is None:
             raise ValueError('content required for write')
         if payload.action == 'move' and payload.dest is None:
@@ -89,9 +114,12 @@ class FileSystemTool(BaseTool):
         if payload.action == 'undo' and not payload.request_id:
             raise ValueError('request_id is required')
         if payload.dest:
-            dst = Path(payload.dest)
-            if not payload.allow_outside_sandbox and (_is_network_path(payload.dest) or not _is_allowed_path(dst)):
-                raise ValueError('dest not allowed')
+            if not is_path_allowed_for_run(
+                payload.dest,
+                payload.action,
+                allow_outside_sandbox=payload.allow_outside_sandbox,
+            ):
+                raise ValueError('dest not allowed by sandbox or run filesystem scope')
 
     async def _read(self, path: Path) -> str:
         return await asyncio.to_thread(path.read_text, encoding='utf-8', errors='ignore')

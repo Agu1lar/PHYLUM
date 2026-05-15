@@ -51,6 +51,20 @@ jobs:
         run: |
           python -m playwright install --with-deps
 
+      - name: Architecture invariants (documented + enforced)
+        run: |
+          python core/architecture_invariants.py
+          python -m pytest tests/test_architecture_invariants.py tests/test_layer_contracts.py -m architecture -q --tb=short
+        env:
+          CI: true
+
+      - name: Golden tasks and domain benchmarks
+        run: |
+          python evaluation/golden_runner.py --skip-requires
+          python -m pytest tests/test_golden_tasks.py tests/test_domain_benchmarks.py -m "golden or benchmark" -q --tb=short
+        env:
+          CI: true
+
       - name: Run tests
         run: |
           python -m pytest -q

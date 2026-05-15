@@ -1,0 +1,29 @@
+{
+  "id": "fs-001-write-read",
+  "domain": "filesystem",
+  "title": "Write then read a text file",
+  "tags": ["smoke", "local"],
+  "requires": [],
+  "setup": [],
+  "steps": [
+    {
+      "tool": "filesystem",
+      "action": "write",
+      "params": {
+        "path": "{{tmpdir}}/golden-out.txt",
+        "content": "golden hello",
+        "backup": false
+      },
+      "expect": { "status": "succeeded" }
+    },
+    {
+      "tool": "filesystem",
+      "action": "read",
+      "params": { "path": "{{tmpdir}}/golden-out.txt" },
+      "expect": {
+        "status": "succeeded",
+        "data_contains": { "content": "contains:golden hello" }
+      }
+    }
+  ]
+}

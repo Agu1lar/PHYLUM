@@ -1,0 +1,18 @@
+{
+  "id": "drv-002-inspect-inf-fixture",
+  "domain": "drivers",
+  "title": "Inspect driver INF fixture via desktop tool",
+  "tags": ["local"],
+  "requires": [],
+  "steps": [
+    {
+      "tool": "desktop",
+      "action": "inspect_installer",
+      "params": { "path": "{{fixture:drivers/sample.inf}}" },
+      "expect": {
+        "status": "succeeded",
+        "data_contains": { "installer_type": "driver_inf" }
+      }
+    }
+  ]
+}

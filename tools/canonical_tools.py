@@ -243,8 +243,11 @@ ACTION_METADATA: Dict[str, Dict[str, Any]] = {
         "get": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["name"], "effect_kind": "get_skill"},
         "list": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "list_skills"},
         "search": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["query"], "effect_kind": "search_skills"},
+        "discover_objective": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["objective"], "effect_kind": "discover_skills_by_objective"},
         "execute": {"semantic_type": "execution", "mutates_state": True, "approval_mode": "single", "target_fields": ["name"], "effect_kind": "execute_skill", "reversibility": "none"},
         "verify": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["name"], "effect_kind": "verify_skill"},
+        "verify_trust": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["name"], "effect_kind": "verify_skill_trust"},
+        "approve_trust": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["name"], "effect_kind": "approve_skill_trust", "reversibility": "quarantine"},
         "validate_manifest": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "validate_manifest"},
         "upgrade_dynamic": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["tool_id"], "effect_kind": "upgrade_dynamic_tool", "reversibility": "unregister"},
     },
@@ -280,6 +283,16 @@ ACTION_METADATA: Dict[str, Dict[str, Any]] = {
         "rank_strategies": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "rank_strategies"},
         "compare_routes": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "compare_routes"},
         "best_route": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "best_route"},
+        "record_tool_outcome": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "none", "target_fields": ["tool", "tool_action", "status"], "effect_kind": "record_tool_outcome"},
+        "get_tool_confidence": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["tool", "tool_action"], "effect_kind": "get_tool_confidence"},
+        "list_tool_confidences": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["tool"], "effect_kind": "list_tool_confidences"},
+        "plan_tool_confidence": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "plan_tool_confidence"},
+        "replay_regression": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["request_id"], "effect_kind": "replay_regression"},
+        "list_replayable_runs": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "list_replayable_runs"},
+        "get_autonomy_metrics": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["request_id"], "effect_kind": "get_autonomy_metrics"},
+        "list_autonomy_metrics": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "list_autonomy_metrics"},
+        "get_quality_dashboard": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "get_quality_dashboard"},
+        "list_quality_versions": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "effect_kind": "list_quality_versions"},
     },
     "test_diagnostic": {
         "run_and_diagnose": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["target"], "effect_kind": "run_and_diagnose_tests"},
@@ -807,6 +820,12 @@ def tool_definitions() -> List[Dict[str, Any]]:
                         "timeout": {"type": "integer", "minimum": 1, "maximum": 300},
                         "work_dir": {"type": "string", "description": "Working directory override"},
                         "input_files": {"type": "object", "description": "Files to create in sandbox before execution (name -> content)"},
+                        "capabilities": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Declared capabilities (filesystem:read, network:outbound, shell:run, etc.)",
+                        },
+                        "request_id": {"type": "string", "description": "Run id — binds run filesystem scope when work_dir omitted"},
                     },
                     "required": ["action", "code"],
                     "additionalProperties": False,
@@ -861,13 +880,13 @@ def tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "skill",
-                "description": "Manage the local skill manifest system. Register, update, query, verify and execute versioned, auditable skills with declared permissions, typed inputs/outputs and risk profiles. Prefer discovering existing skills before creating new dynamic tools.",
+                "description": "Manage the local skill manifest system. ALWAYS call discover_objective with the user's goal before creating sandbox scripts or dynamic tools. Register, update, query, verify signature/trust, approve altered imports, and execute versioned skills with declared permissions and risk profiles.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["register", "update", "unregister", "get", "list", "search", "execute", "verify", "validate_manifest", "upgrade_dynamic"],
+                            "enum": ["register", "update", "unregister", "get", "list", "search", "discover_objective", "execute", "verify", "verify_trust", "approve_trust", "validate_manifest", "upgrade_dynamic", "evaluate", "export_package", "import_package"],
                         },
                         "name": {"type": "string", "description": "Skill name (lowercase, a-z0-9_.-) for register/update/get/execute/verify"},
                         "version": {"type": "string", "description": "Semver version (X.Y.Z)"},
@@ -902,6 +921,20 @@ def tool_definitions() -> List[Dict[str, Any]]:
                         "permission": {"type": "string", "description": "Filter by permission (for list)"},
                         "max_risk": {"type": "string", "enum": ["low", "medium", "high", "critical"], "description": "Max risk level filter (for list)"},
                         "query": {"type": "string", "description": "Search query (for search)"},
+                        "objective": {"type": "string", "description": "Natural-language task goal (for discover_objective) — run this BEFORE new scripts"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Max matches returned (discover_objective)"},
+                        "min_score": {"type": "number", "minimum": 0, "maximum": 1, "description": "Minimum relevance score (discover_objective)"},
+                        "trusted_only": {"type": "boolean", "description": "Only trusted/signed skills (discover_objective)"},
+                        "evaluated_only": {"type": "boolean", "description": "Only evaluation-passed skills (discover_objective, default true)"},
+                        "agent_available_only": {"type": "boolean", "description": "Only agent-ready skills (list)"},
+                        "package_path": {"type": "string", "description": "Folder or .phylum-skillpack path (export_package/import_package)"},
+                        "skill_names": {"type": "array", "items": {"type": "string"}, "description": "Skills to include in package (export_package)"},
+                        "as_zip": {"type": "boolean", "description": "Export as .phylum-skillpack zip (export_package)"},
+                        "overwrite": {"type": "boolean", "description": "Overwrite existing skills on import"},
+                        "run_evaluation": {"type": "boolean", "description": "Run tests after register/import"},
+                        "tests": {"type": "array", "items": {"type": "object"}, "description": "Skill test cases [{name, params, expect}]"},
+                        "min_tests": {"type": "integer", "minimum": 1, "description": "Minimum tests required in tests.json"},
+                        "review_notes": {"type": "string", "description": "Notes when approving trust after review"},
                         "tool_spec": {"type": "object", "description": "DynamicToolSpec dict to upgrade (for upgrade_dynamic)"},
                     },
                     "required": ["action"],
@@ -974,7 +1007,7 @@ def tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "execution_economics",
-                "description": "Execution economics — track cost per run (tokens, time, resources), analyze path complexity (tools and steps per approach), evaluate stopping heuristics (when to ask for help vs. explore further), and optimize route selection (choose the most efficient path based on historical strategy data).",
+                "description": "Execution economics — track cost per run, analyze path complexity, stopping heuristics, route optimization, per-tool/action confidence from success history, and regression replay of persisted runs in dry-run mode.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -983,7 +1016,11 @@ def tool_definitions() -> List[Dict[str, Any]]:
                             "enum": ["create_tracker", "record_step", "record_llm_usage",
                                      "get_summary", "check_budget", "analyze_complexity",
                                      "evaluate_stopping", "rank_strategies", "compare_routes",
-                                     "best_route"],
+                                     "best_route", "record_tool_outcome", "get_tool_confidence",
+                                     "list_tool_confidences", "plan_tool_confidence",
+                                     "replay_regression", "list_replayable_runs",
+                                     "get_autonomy_metrics", "list_autonomy_metrics",
+                                     "get_quality_dashboard", "list_quality_versions"],
                         },
                         "run_id": {"type": "string", "description": "Run identifier for cost tracking"},
                         "model": {"type": "string", "description": "LLM model name for pricing"},
@@ -1007,6 +1044,14 @@ def tool_definitions() -> List[Dict[str, Any]]:
                         "route_b": {"type": "object", "description": "Second route for comparison"},
                         "steps": {"type": "array", "items": {"type": "object"}, "description": "Step records for complexity analysis"},
                         "branch_count": {"type": "integer", "description": "Number of parallel branches"},
+                        "request_id": {"type": "string", "description": "Persisted run id for regression replay"},
+                        "replan": {"type": "boolean", "description": "Re-plan from original input during replay (default true)"},
+                        "validate_tasks": {"type": "boolean", "description": "Validate stored tasks in dry-run (default true)"},
+                        "min_samples": {"type": "integer", "description": "Minimum samples when listing confidences"},
+                        "limit": {"type": "integer", "description": "Max rows for list operations"},
+                        "plan_steps": {"type": "array", "items": {"type": "object"}, "description": "Tool/action pairs for plan_tool_confidence"},
+                        "runtime_mode": {"type": "string", "description": "Filter dashboard by runtime mode (agentic, heuristic, etc.)"},
+                        "provider": {"type": "string", "description": "Filter dashboard by LLM provider"},
                     },
                     "required": ["action"],
                     "additionalProperties": False,
@@ -1416,7 +1461,7 @@ def normalize_agentic_task(tool_name: str, arguments: Dict[str, Any], task_id: s
         params = {
             key: value
             for key, value in arguments.items()
-            if key in {"code", "timeout", "work_dir", "input_files"}
+            if key in {"code", "timeout", "work_dir", "input_files", "capabilities", "request_id"}
             and value is not None
         }
     elif tool_name == "artifact":
@@ -1445,7 +1490,8 @@ def normalize_agentic_task(tool_name: str, arguments: Dict[str, Any], task_id: s
                 "language", "code", "permissions", "inputs", "outputs",
                 "risk", "tags", "entry_point", "dependencies",
                 "params", "timeout", "tag", "permission", "max_risk",
-                "query", "tool_id", "tool_spec",
+                "query", "objective", "limit", "min_score", "trusted_only",
+                "review_notes", "tool_id", "tool_spec",
             }
             and value is not None
         }
@@ -1484,6 +1530,8 @@ def normalize_agentic_task(tool_name: str, arguments: Dict[str, Any], task_id: s
                 "is_retry", "is_replan", "error",
                 "current_confidence", "goal_progress", "consecutive_errors",
                 "strategies", "route_a", "route_b", "steps", "branch_count",
+                "request_id", "replan", "validate_tasks", "min_samples", "limit", "plan_steps",
+                "runtime_mode", "provider",
             }
             and value is not None
         }

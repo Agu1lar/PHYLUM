@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import traceback
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ValidationError
 
@@ -81,21 +81,26 @@ class ToolRegistry:
     def supports(self, tool_name: str) -> bool:
         return tool_name in self.tools and tool_name in supported_tools()
 
-    def build_payload(self, task: Dict[str, Any]) -> Dict[str, Any]:
+    def build_payload(self, task: Dict[str, Any], *, request_id: Optional[str] = None) -> Dict[str, Any]:
         tool_name = task["tool"]
         payload = dict(task.get("params", {}))
         if tool_name == "shell":
             payload.setdefault("shell", "powershell")
         else:
             payload["action"] = task["action"]
+        run_id = request_id or task.get("request_id") or payload.get("request_id")
         if tool_name == "filesystem":
             payload["allow_outside_sandbox"] = bool(task.get("approval_granted"))
+            if run_id:
+                payload["request_id"] = run_id
+        if tool_name == "sandbox" and run_id:
+            payload["request_id"] = run_id
         return payload
 
-    async def execute(self, task: Dict[str, Any], *, cancel_event=None) -> Dict[str, Any]:
+    async def execute(self, task: Dict[str, Any], *, cancel_event=None, request_id: Optional[str] = None) -> Dict[str, Any]:
         tool_name = task["tool"]
         tool = self.tools[tool_name]
-        payload = self.build_payload(task)
+        payload = self.build_payload(task, request_id=request_id or task.get("request_id"))
         try:
             raw_result = await tool.run(payload, cancel_event=cancel_event)
             raw_payload = _jsonable(raw_result)

@@ -178,6 +178,8 @@ class SandboxExecutor:
         work_dir: Optional[str] = None,
         cancel_event: Optional[asyncio.Event] = None,
         input_files: Optional[Dict[str, str]] = None,
+        capabilities: Optional[List[str]] = None,
+        script_id: Optional[str] = None,
     ) -> SandboxResult:
         if len(code) > MAX_SCRIPT_LENGTH:
             return SandboxResult(ok=False, error=f"Script exceeds maximum length of {MAX_SCRIPT_LENGTH} characters")
@@ -190,11 +192,35 @@ class SandboxExecutor:
             for name, content in input_files.items():
                 (sandbox_dir / name).write_text(content, encoding="utf-8")
 
-        wrapped_code = self._wrap_python_script(code)
+        capability_profile = None
+        try:
+            from script_capability import build_script_profile, wrap_python_script
+
+            capability_profile = build_script_profile(
+                code,
+                script_id=script_id or uuid.uuid4().hex[:8],
+                capabilities=capabilities,
+            )
+            if capability_profile.violations:
+                return SandboxResult(
+                    ok=False,
+                    error="Capability isolation: " + "; ".join(capability_profile.violations),
+                    work_dir=str(sandbox_dir),
+                )
+            isolated_code = wrap_python_script(code, capability_profile, sandbox_dir=str(sandbox_dir))
+            wrapped_code = self._wrap_python_script(isolated_code)
+        except ValueError as exc:
+            return SandboxResult(ok=False, error=str(exc), work_dir=str(sandbox_dir))
+        except ImportError:
+            wrapped_code = self._wrap_python_script(code)
+
         script_path = sandbox_dir / f"script_{uuid.uuid4().hex[:8]}.py"
         script_path.write_text(wrapped_code, encoding="utf-8")
 
         python_exe = sys.executable or "python"
+        env_extra = {}
+        if capability_profile is not None:
+            env_extra["AGENTE_SCRIPT_CAPABILITIES"] = ",".join(capability_profile.to_dict()["effective"])
 
         return await self._run_process(
             [python_exe, str(script_path)],
@@ -202,6 +228,7 @@ class SandboxExecutor:
             timeout=effective_timeout,
             cancel_event=cancel_event,
             script_path=str(script_path),
+            env_extra=env_extra,
         )
 
     async def execute_powershell(
@@ -243,11 +270,14 @@ class SandboxExecutor:
         timeout: int,
         cancel_event: Optional[asyncio.Event],
         script_path: str,
+        env_extra: Optional[Dict[str, str]] = None,
     ) -> SandboxResult:
         env = dict(os.environ)
         env["AGENTE_SANDBOX"] = "1"
         env["AGENTE_SANDBOX_DIR"] = str(work_dir)
         env["PYTHONIOENCODING"] = "utf-8"
+        if env_extra:
+            env.update(env_extra)
 
         kwargs: Dict[str, Any] = {
             "stdout": asyncio.subprocess.PIPE,

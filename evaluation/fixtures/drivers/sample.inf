@@ -1,0 +1,16 @@
+; Sample driver INF for golden-task inspection
+[Version]
+Signature="$Windows NT$"
+Class=Printer
+ClassGuid={4D36E979-E325-11CE-BFC1-08002BE10318}
+Provider=%Manufacturer%
+DriverVer=01/01/2024,1.0.0.0
+
+[Manufacturer]
+%Manufacturer%=Models,NTamd64
+
+[Models.NTamd64]
+"Sample Printer"=Install, USBPRINT\SamplePrinter
+
+[Install]
+CopyFiles=@

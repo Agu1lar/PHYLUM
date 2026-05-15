@@ -1,0 +1,14 @@
+{
+  "id": "off-001-planner-routes-word",
+  "domain": "office",
+  "title": "Planner routes word_find_text to office tool",
+  "tags": ["smoke", "local"],
+  "requires": [],
+  "handler": "planner.route",
+  "handler_args": {
+    "prompt": "word find text contrato C:/Reports/contract.docx"
+  },
+  "expect": {
+    "field_equals": { "ok": true, "tool": "office", "action": "word_find_text" }
+  }
+}

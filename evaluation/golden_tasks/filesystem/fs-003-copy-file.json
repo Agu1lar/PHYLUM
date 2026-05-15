@@ -1,0 +1,36 @@
+{
+  "id": "fs-003-copy-file",
+  "domain": "filesystem",
+  "title": "Copy file between directories",
+  "tags": ["local"],
+  "requires": [],
+  "setup": [
+    { "action": "mkdir", "path": "{{tmpdir}}/src" },
+    { "action": "mkdir", "path": "{{tmpdir}}/dst" },
+    {
+      "action": "copy_fixture",
+      "from": "filesystem/seed.txt",
+      "to": "{{tmpdir}}/src/seed.txt"
+    }
+  ],
+  "steps": [
+    {
+      "tool": "filesystem",
+      "action": "copy",
+      "params": {
+        "path": "{{tmpdir}}/src/seed.txt",
+        "dest": "{{tmpdir}}/dst/seed-copy.txt"
+      },
+      "expect": { "status": "succeeded" }
+    },
+    {
+      "tool": "filesystem",
+      "action": "read",
+      "params": { "path": "{{tmpdir}}/dst/seed-copy.txt" },
+      "expect": {
+        "status": "succeeded",
+        "data_contains": { "content": "contains:golden seed" }
+      }
+    }
+  ]
+}

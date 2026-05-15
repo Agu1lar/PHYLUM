@@ -1,0 +1,21 @@
+{
+  "id": "doc-002-extract-text",
+  "domain": "documents",
+  "title": "Extract text from fixture document",
+  "tags": ["local"],
+  "requires": [],
+  "steps": [
+    {
+      "tool": "document_intelligence",
+      "action": "extract_text",
+      "params": {
+        "path": "{{fixture:documents/invoice_sample.txt}}",
+        "use_ocr": false
+      },
+      "expect": {
+        "status": "succeeded",
+        "data_contains": { "text": "contains:1500 reais" }
+      }
+    }
+  ]
+}

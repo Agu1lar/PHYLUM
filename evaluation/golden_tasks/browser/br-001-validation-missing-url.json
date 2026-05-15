@@ -1,0 +1,14 @@
+{
+  "id": "br-001-validation-missing-url",
+  "domain": "browser",
+  "title": "Browser tool rejects open_page without url",
+  "tags": ["smoke", "local"],
+  "requires": [],
+  "handler": "browser.validate",
+  "handler_args": {
+    "payload": { "action": "open_page", "headless": true }
+  },
+  "expect": {
+    "field_equals": { "validation_error": "contains:url" }
+  }
+}

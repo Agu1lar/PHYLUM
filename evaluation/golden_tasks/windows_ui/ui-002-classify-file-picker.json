@@ -1,0 +1,18 @@
+{
+  "id": "ui-002-classify-file-picker",
+  "domain": "windows_ui",
+  "title": "Classify file picker dialog",
+  "tags": ["local"],
+  "requires": [],
+  "handler": "windows_ui.classify_dialog",
+  "handler_args": {
+    "title": "Save As",
+    "controls": [
+      { "title": "File name" },
+      { "title": "Open" }
+    ]
+  },
+  "expect": {
+    "field_equals": { "kind": "file_picker" }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "id": "web-001-extract-links-fixture",
+  "domain": "web_research",
+  "title": "Extract links from HTML fixture",
+  "tags": ["smoke", "local"],
+  "requires": [],
+  "handler": "web.extract_links_fixture",
+  "handler_args": { "fixture": "web/search_results.html" },
+  "expect": {
+    "field_equals": { "count": 3 },
+    "min_count": 3,
+    "count_field": "links"
+  }
+}

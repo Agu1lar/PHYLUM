@@ -1,0 +1,18 @@
+{
+  "id": "ui-001-classify-print-dialog",
+  "domain": "windows_ui",
+  "title": "Classify print dialog from control metadata",
+  "tags": ["smoke", "local"],
+  "requires": [],
+  "handler": "windows_ui.classify_dialog",
+  "handler_args": {
+    "title": "Print",
+    "controls": [
+      { "title": "Printer" },
+      { "title": "Copies" }
+    ]
+  },
+  "expect": {
+    "field_equals": { "kind": "print_dialog" }
+  }
+}

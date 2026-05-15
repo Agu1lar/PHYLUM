@@ -1,0 +1,18 @@
+{
+  "id": "doc-001-inspect-text",
+  "domain": "documents",
+  "title": "Inspect plain-text document metadata",
+  "tags": ["smoke", "local"],
+  "requires": [],
+  "steps": [
+    {
+      "tool": "document_intelligence",
+      "action": "inspect_document",
+      "params": { "path": "{{fixture:documents/contract_sample.txt}}" },
+      "expect": {
+        "status": "succeeded",
+        "data_contains": { "extension": ".txt" }
+      }
+    }
+  ]
+}

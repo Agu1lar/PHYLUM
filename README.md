@@ -50,7 +50,7 @@ The entire cycle runs as a **directed state graph** with 13 node types and condi
 | Persistence | SQLite (via aiosqlite), JSON KV store |
 | Vector DB | LanceDB (embedded, serverless) |
 | Validation | Pydantic |
-| Tests | pytest, pytest-asyncio (1200+ tests across 49 suites) |
+| Tests | pytest, pytest-asyncio (1270+ tests across 51 suites); golden tasks + domain benchmarks in `evaluation/` |
 
 ---
 
@@ -60,6 +60,8 @@ These capabilities have graduated from the roadmap and are part of PHYLUM's curr
 
 - **State Graph with subtask DAG**: the pipeline is driven by a state graph and, within the local runtime, subtasks use a real dependency graph via `depends_on`, with cycle detection, parallel branches, safe speculative execution for reads and partial completion.
 - **Reasoning/execution layer separation**: `CognitiveLayer` handles planning, LLM loop and strategy decisions; `OperationalLayer` handles task graph, recovery and graph executors; `ExecutionLayer` runs tools, safety, reflection and desktop automation; `StateLayer` handles persistence, World Model, Strategy Memory, durable queue and sessions.
+- **Layer contracts (Protocol interfaces)**: `layer_contracts.py` defines `@runtime_checkable` Protocols per layer so callers depend on interfaces, not implementations; `RuntimeManager` types layers as `CognitiveLayerProtocol`, etc.; contract tests verify conformance, stub substitutability, forbidden cross-imports and acyclic dependency rules.
+- **Architectural invariants (CI)**: nine documented invariants (`INV-01`…`INV-09`) in `architecture_invariants.py` — layer protocol conformance, module import boundaries, acyclic dependencies, typed `RuntimeManager` fields; enforced on every CI run via `python core/architecture_invariants.py` and `pytest -m architecture`.
 - **Parallel tool calls**: when the LLM emits multiple independent tool calls in the same turn, the agentic loop executes them in parallel via `asyncio.gather`, preserving the original order of results in the message history.
 - **Parallel sub-agents**: `subagent.run_parallel_branches` creates isolated branches with a specific objective, its own budget for steps/timeout/tools/tokens/cost, result merging and cascading cancellation when a branch satisfies the objective.
 - **Anthropic extended thinking**: Claude models with thinking receive `thinking: adaptive`, extended timeout, thinking block persistence and `agent_thinking` events for observability.
@@ -69,12 +71,22 @@ These capabilities have graduated from the roadmap and are part of PHYLUM's curr
 - **Explicit event bus**: first-class async pub/sub (`EventBus`) with 30+ typed events, wildcard subscriptions, history buffer and concurrent handler dispatch. State transitions, tool calls, approvals, recoveries and fallbacks are all events.
 - **Robust semantic verification**: `GoalVerifier` checks if the objective was actually achieved; `SemanticValidator` checks if the result makes sense in context; `PostconditionChecker` confirms side effects of mutations (file exists after write, etc.).
 - **Execution economics**: `CostTracker` accumulates tokens/time/cost per run with pricing for 15+ models; `PathComplexityAnalyzer` scores tool/step/retry/replan/error complexity; `StoppingHeuristics` decides when to stop based on budget, errors, diminishing returns and confidence; `RouteOptimizer` picks the most efficient path from historical data.
+- **Tool/action confidence**: `ToolActionConfidenceStore` records real outcomes per `(tool, action)` and exposes a Beta-posterior score (auto-recorded after each task); query via `execution_economics.get_tool_confidence` / `plan_tool_confidence`.
+- **Regression replay**: `RegressionReplayEngine` reloads persisted runs (`state:{request_id}`), re-plans from the original prompt, dry-runs tasks (validation only, no mutations) and diffs plan, cost and per-task results — `execution_economics.replay_regression`.
+- **Capability isolation (sandbox scripts)**: `script_capability.py` infers required permissions from code, validates declared `capabilities`, wraps Python scripts with import guards and `ScopedFS` before execution (`sandbox.execute_python`).
+- **Filesystem scopes (per run)**: each run gets an isolated directory under `agente_run_scopes/{request_id}`; `FileSystemTool` and sandbox scripts are limited to that scope unless approval extends paths (`filesystem_scope.py`).
+- **Autonomy metrics**: per-run measures for steps-to-success, avoidable handoffs, recovery effectiveness and interrupted loops (`autonomy_metrics.py`); auto-finalized on run complete/fail; query via `execution_economics.get_autonomy_metrics`.
+- **Quality dashboard**: aggregates autonomy metrics per `runtime_mode|provider|model` with success rate, cost averages and interrupt rates — `quality_dashboard.py`; `get_quality_dashboard` / `list_quality_versions`.
 - **Per-run cost budget with hard stop**: each agentic loop run has a USD budget (default $0.25) and token budget (default 80k tokens). If the budget is exceeded mid-run, the loop halts gracefully with a summary of completed work instead of silently spending more.
 - **Pluggable embedding models**: `EmbeddingProvider` abstraction with `FeatureHashProvider` (default, offline, deterministic) and `SentenceTransformerProvider` (all-MiniLM-L6-v2) with lazy loading and automatic fallback.
 - **Hybrid re-ranking (BM25 + vector)**: full Okapi BM25 scorer with inverted index, combined with vector similarity via reciprocal rank fusion (RRF) for both strategy and entity search.
 - **Incremental batch indexing**: `batch_upsert_strategies()` and `batch_upsert_entities()` for efficient bulk updates to the semantic index with configurable batch sizes.
 - **Visual perception and hybrid computer-use**: screenshot capture and OCR, visual element detection, visual grounding (maps OCR detections to UIA selectors), coordinate-based mouse/keyboard fallback with verified bounding boxes, post-action visual verification (before/after comparison, modal/spinner/error detection), visual run replay with redacted screenshots and action annotations, and anti-fragility policy (prefer native API, use visual only when UIA/COM/DOM fail).
 - **Operational skills library**: `SkillManifest` (name, version, semver, permissions, I/O schema, risk descriptors), `SkillRegistry` (persistent on-disk, import/export), `SkillRunner` (sandbox execution with capability declaration and integrity verification).
+- **Skill discovery by objective**: `discover_objective` ranks installed skills against the user's goal (token overlap on name, description, tags, parameters) before the agent creates sandbox scripts or dynamic tools.
+- **Skill signing and provenance**: HMAC-SHA256 bundle signatures over manifest+code, `SkillProvenance` lineage, trust states (`trusted` / `untrusted` / `quarantined`), `approve_trust` after human review, and blocked execution when code is altered without re-approval.
+- **Skill evaluation gate**: `tests.json` per skill with minimum test count; `skill.evaluate` runs cases before `agent_available`; `discover_objective` defaults to evaluated+trusted skills only.
+- **Offline skill marketplace**: export/import folder or `.phylum-skillpack` zip via `skill.export_package` / `skill.import_package` — local paths only, `telemetry: false` in package manifest.
 - **Persistent codebase map**: `CodebaseMap` with AST-based Python scanner, regex-based JS/TS/config scanner, SQLite-backed storage, incremental/full scan, and query API for symbols, imports, routes, tests, configs and ownership per file.
 - **Test diagnostic loop**: `TestDiagnosticLoop` orchestrates run → interpret → patch → rerun → expand cycle with `TestRunner`, `FailureInterpreter` and `RegressionExpander` for pytest/jest.
 - **Patch planner**: `PatchPlanner` decomposes large changes by files/owners with risk scoring (`RiskAssessor`), topological ordering (`DependencyOrderer` via Kahn's algorithm) and CODEOWNERS integration (`OwnerResolver`).
@@ -452,6 +464,7 @@ The backend exposes endpoints to verify operational readiness:
 | `test_embedding_bm25_batch.py` | BM25, hybrid re-ranking, batch indexing, pluggable embedders |
 | `test_visual_perception.py` | Visual grounding, visual replay, visual policy, screenshot model |
 | `test_skill_manifest.py` | SkillManifest, SkillRegistry, SkillRunner, capability declaration |
+| `test_skill_evaluation_marketplace.py` | Skill evaluation gate, offline marketplace import/export |
 | `test_codebase_map.py` | CodebaseMap, PythonScanner, PatternScanner, incremental updates |
 | `test_diagnostic_and_planner.py` | TestDiagnosticLoop, PatchPlanner, RiskAssessor, DependencyOrderer |
 | `test_heartbeat_watchdog.py` | HeartbeatEmitter, ProgressTracker, ProcessWatchdog, FrozenWindowDetector |
@@ -474,28 +487,21 @@ The backend exposes endpoints to verify operational readiness:
 
 The system already has ~30 modules with distinct responsibilities. The biggest risk is uncontrolled complexity.
 
-- [ ] Clear contracts between layers (interfaces, not implementations)
-- [ ] Explicit boundaries between modules with contract tests
-- [ ] Architectural invariants documented and enforced by CI
+- [x] Clear contracts between layers (interfaces, not implementations) — `layer_contracts.py` defines `Protocol` interfaces per layer (`CognitiveLayerProtocol`, `OperationalLayerProtocol`, `ExecutionLayerProtocol`, `StateLayerProtocol`)
+- [x] Explicit boundaries between modules with contract tests — `tests/test_layer_contracts.py` verifies protocol conformance, stub substitutability, forbidden imports, and dependency direction
+- [x] Architectural invariants documented and enforced by CI — `core/architecture_invariants.py` (INV-01…INV-09); `python core/architecture_invariants.py` locally; CI step runs checker + `pytest -m architecture`
 
 #### Sandbox hardening (remaining)
 
-Automatic dependency detection and approval-gated install are implemented. What's still missing:
+Automatic dependency detection, approval-gated install, capability isolation and per-run filesystem scopes are implemented. What's still missing:
 
-- [ ] Capability isolation (restrict access per script)
-- [ ] Filesystem scopes (limit I/O per run)
 - [ ] Command policies (whitelist/blacklist of commands and modules)
 - [ ] Provenance (track origin of each script: who generated it, why, when)
 - [ ] Audit trails (complete log of inputs and outputs)
 
 #### Operational skills library (remaining)
 
-The skill manifest, registry and runner are implemented. What's still missing:
-
-- [ ] Skill discovery by objective: choose installed skills before generating a new script
-- [ ] Skill signing/checksum and provenance to prevent execution of altered code without review
-- [ ] Skill evaluation: minimum tests per skill before making available to the agent
-- [ ] Local/offline marketplace: import/export skill packages without telemetry
+Skill manifest, registry, runner, objective discovery, signing, provenance, evaluation gate and offline marketplace are implemented. What's still missing:
 
 #### Workspace development automation (remaining)
 
@@ -511,12 +517,10 @@ Codebase map, test diagnostic loop and patch planner are implemented. What's sti
 
 Agentic automation systems need to measure whether they improve or degrade over time.
 
-- [ ] Local golden tasks: suite of representative tasks with fixtures and expected outcomes
-- [ ] Benchmarks by domain: Office, filesystem, browser, Windows UI, drivers, documents and web research
-- [ ] Regression replay: re-execute old runs in dry-run mode to compare plan, cost and result
-- [ ] Confidence score per tool/action based on real success history
-- [ ] Autonomy metrics: steps to success, avoidable handoffs, effective recoveries, interrupted loops
-- [ ] Quality dashboard per runtime/model/provider version
+- [x] Local golden tasks: suite of representative tasks with fixtures and expected outcomes — `evaluation/golden_tasks/` (17 tasks, JSON + fixtures); `python evaluation/golden_runner.py --skip-requires`; `pytest -m golden`
+- [x] Benchmarks by domain: Office, filesystem, browser, Windows UI, drivers, documents and web research — `evaluation/benchmark_domains.py` (8 domains); `pytest -m benchmark`; `scripts/run_golden_benchmarks.ps1`
+- [x] Regression replay: re-execute old runs in dry-run mode to compare plan, cost and result — `regression_replay.py`; `execution_economics.replay_regression` / `list_replayable_runs`; dry-run validates tasks without mutations
+- [x] Confidence score per tool/action based on real success history — `tool_action_confidence.py` (Beta posterior); auto-recorded in `_record_task_observation`; `get_tool_confidence` / `list_tool_confidences` / `plan_tool_confidence`
 
 #### Desktop session observability and control
 

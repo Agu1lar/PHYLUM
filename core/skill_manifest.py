@@ -23,6 +23,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from skill_signing import SkillProvenance, SkillTrustStatus
+
 
 # ---------------------------------------------------------------------------
 # Enums and constants
@@ -194,6 +196,10 @@ class SkillManifest(BaseModel):
     entry_point: str = "run"
     dependencies: List[str] = Field(default_factory=list)
     checksum: str = ""
+    manifest_checksum: str = ""
+    signature: str = ""
+    trust_status: SkillTrustStatus = SkillTrustStatus.TRUSTED
+    provenance: SkillProvenance = Field(default_factory=SkillProvenance)
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     skill_id: str = ""
@@ -232,22 +238,28 @@ class SkillManifest(BaseModel):
         d["risk"]["level"] = self.risk.level.value
         d["effective_risk_level"] = self.effective_risk_level.value
         d["requires_approval"] = self.requires_approval
+        d["trust_status"] = self.trust_status.value if isinstance(self.trust_status, SkillTrustStatus) else self.trust_status
+        if isinstance(self.provenance, SkillProvenance):
+            d["provenance"] = self.provenance.model_dump()
         return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SkillManifest":
+        data = dict(data)
         if "permissions" in data:
-            data = dict(data)
             data["permissions"] = [
                 PermissionKind(p) if isinstance(p, str) else p
                 for p in data["permissions"]
             ]
         if "risk" in data and isinstance(data["risk"], dict):
-            data = dict(data)
             risk = dict(data["risk"])
             if isinstance(risk.get("level"), str):
                 risk["level"] = RiskLevel(risk["level"])
             data["risk"] = risk
+        if "provenance" in data and isinstance(data["provenance"], dict):
+            data["provenance"] = SkillProvenance(**data["provenance"])
+        if "trust_status" in data and isinstance(data["trust_status"], str):
+            data["trust_status"] = SkillTrustStatus(data["trust_status"])
         return cls(**data)
 
     def validate_inputs(self, data: Dict[str, Any]) -> List[str]:

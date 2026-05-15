@@ -1,0 +1,37 @@
+{
+  "id": "doc-003-index-search",
+  "domain": "documents",
+  "title": "Search document content in a directory",
+  "tags": ["local"],
+  "requires": [],
+  "setup": [
+    { "action": "mkdir", "path": "{{tmpdir}}/docs" },
+    {
+      "action": "copy_fixture",
+      "from": "documents/contract_sample.txt",
+      "to": "{{tmpdir}}/docs/contract_sample.txt"
+    },
+    {
+      "action": "copy_fixture",
+      "from": "documents/invoice_sample.txt",
+      "to": "{{tmpdir}}/docs/invoice_sample.txt"
+    }
+  ],
+  "steps": [
+    {
+      "tool": "document_intelligence",
+      "action": "search_content",
+      "params": {
+        "root": "{{tmpdir}}/docs",
+        "query": "prestacao de servicos",
+        "use_ocr": false,
+        "limit": 10
+      },
+      "expect": {
+        "status": "succeeded",
+        "min_count": 1,
+        "count_field": "matches"
+      }
+    }
+  ]
+}

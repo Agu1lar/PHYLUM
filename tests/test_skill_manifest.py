@@ -456,10 +456,15 @@ class TestSkillRunner:
     def teardown_method(self):
         shutil.rmtree(str(self.tmpdir), ignore_errors=True)
 
+    def _reg(self, manifest: SkillManifest, code: str = SAMPLE_CODE, **ready_kw) -> SkillManifest:
+        result = self.registry.register(manifest, code)
+        self.registry.ensure_agent_ready(manifest.name, **ready_kw)
+        return result
+
     @pytest.mark.asyncio
     async def test_execute_simple_skill(self):
         m = _sample_manifest()
-        self.registry.register(m, SAMPLE_CODE)
+        self._reg(m, SAMPLE_CODE)
         result = await self.runner.execute("test.greet", {"name": "Alice"})
         assert result.ok
         assert result.output == {"greeting": "Hello, Alice!"}
@@ -468,7 +473,11 @@ class TestSkillRunner:
     @pytest.mark.asyncio
     async def test_execute_async_skill(self):
         m = _sample_manifest(name="test.async")
-        self.registry.register(m, SAMPLE_ASYNC_CODE)
+        self._reg(
+            m, SAMPLE_ASYNC_CODE,
+            smoke_params={"x": 21},
+            smoke_expect={"ok": True, "output": {"value": 42}},
+        )
         result = await self.runner.execute("test.async", {"x": 21})
         assert result.ok
         assert result.output == {"value": 42}
@@ -490,7 +499,7 @@ class TestSkillRunner:
     @pytest.mark.asyncio
     async def test_execute_after_granting_capability(self):
         m = _sample_manifest(name="test.shell", permissions=[PermissionKind.SHELL_RUN])
-        self.registry.register(m, SAMPLE_CODE)
+        self._reg(m, SAMPLE_CODE)
         self.runner.grant(PermissionKind.SHELL_RUN)
         result = await self.runner.execute("test.shell", {"name": "admin"})
         assert result.ok
@@ -529,12 +538,12 @@ class TestSkillRunner:
         code_path.write_text("# tampered", encoding="utf-8")
         result = await self.runner.execute("test.greet")
         assert not result.ok
-        assert "integrity" in result.error.lower()
+        assert "altered" in result.error.lower() or "integrity" in result.error.lower()
 
     @pytest.mark.asyncio
     async def test_execute_skip_integrity(self):
         m = _sample_manifest()
-        self.registry.register(m, SAMPLE_CODE)
+        self._reg(m, SAMPLE_CODE)
         code_path = self.tmpdir / "test.greet" / "code.py"
         code_path.write_text(SAMPLE_CODE + "\n# extra", encoding="utf-8")
         result = await self.runner.execute("test.greet", skip_integrity_check=True)
@@ -548,6 +557,7 @@ class TestSkillRunner:
             risk=RiskDescriptor(max_execution_time_seconds=1),
         )
         self.registry.register(m, slow_code)
+        self.registry.mark_evaluation_passed("test.slow")
         result = await self.runner.execute("test.slow", timeout=1)
         assert not result.ok
         assert "timed out" in result.error.lower()
@@ -557,6 +567,7 @@ class TestSkillRunner:
         bad_code = "def run(p): raise ValueError('intentional')"
         m = _sample_manifest(name="test.bad")
         self.registry.register(m, bad_code)
+        self.registry.mark_evaluation_passed("test.bad")
         result = await self.runner.execute("test.bad")
         assert not result.ok
         assert "intentional" in result.error
@@ -806,6 +817,11 @@ class TestSkillRunnerSandbox:
     def teardown_method(self):
         shutil.rmtree(str(self.tmpdir), ignore_errors=True)
 
+    def _reg(self, manifest: SkillManifest, code: str = SAMPLE_CODE, **ready_kw) -> SkillManifest:
+        result = self.registry.register(manifest, code)
+        self.registry.ensure_agent_ready(manifest.name, **ready_kw)
+        return result
+
     def test_declare_returns_declaration(self):
         m = _sample_manifest()
         self.registry.register(m, SAMPLE_CODE)
@@ -828,7 +844,7 @@ class TestSkillRunnerSandbox:
     @pytest.mark.asyncio
     async def test_execute_includes_capability_declaration(self):
         m = _sample_manifest()
-        self.registry.register(m, SAMPLE_CODE)
+        self._reg(m, SAMPLE_CODE)
         result = await self.runner.execute("test.greet", {"name": "World"})
         assert result.ok
         assert result.capability_declaration is not None
@@ -854,7 +870,7 @@ class TestSkillRunnerSandbox:
             on_declaration=lambda d: declarations.append(d),
         )
         m = _sample_manifest()
-        self.registry.register(m, SAMPLE_CODE)
+        self._reg(m, SAMPLE_CODE)
         await runner.execute("test.greet", {"name": "CB"})
         assert len(declarations) == 1
         assert declarations[0].skill_name == "test.greet"
@@ -862,7 +878,7 @@ class TestSkillRunnerSandbox:
     @pytest.mark.asyncio
     async def test_execute_simple(self):
         m = _sample_manifest()
-        self.registry.register(m, SAMPLE_CODE)
+        self._reg(m, SAMPLE_CODE)
         result = await self.runner.execute("test.greet", {"name": "Alice"})
         assert result.ok
         assert result.output == {"greeting": "Hello, Alice!"}
@@ -871,7 +887,11 @@ class TestSkillRunnerSandbox:
     @pytest.mark.asyncio
     async def test_execute_async_skill(self):
         m = _sample_manifest(name="test.async")
-        self.registry.register(m, SAMPLE_ASYNC_CODE)
+        self._reg(
+            m, SAMPLE_ASYNC_CODE,
+            smoke_params={"x": 21},
+            smoke_expect={"ok": True, "output": {"value": 42}},
+        )
         result = await self.runner.execute("test.async", {"x": 21})
         assert result.ok
         assert result.output == {"value": 42}
@@ -884,7 +904,7 @@ class TestSkillRunnerSandbox:
         code_path.write_text("# tampered", encoding="utf-8")
         result = await self.runner.execute("test.greet")
         assert not result.ok
-        assert "integrity" in result.error.lower()
+        assert "altered" in result.error.lower() or "integrity" in result.error.lower()
 
     @pytest.mark.asyncio
     async def test_execute_not_found(self):
@@ -913,6 +933,7 @@ class TestSkillRunnerSandbox:
             risk=RiskDescriptor(max_execution_time_seconds=1),
         )
         self.registry.register(m, slow_code)
+        self.registry.mark_evaluation_passed("test.slow")
         result = await self.runner.execute("test.slow", timeout=1)
         assert not result.ok
         assert "timed out" in result.error.lower()
@@ -934,11 +955,16 @@ class TestSkillRunnerSubprocess:
     def teardown_method(self):
         shutil.rmtree(str(self.tmpdir), ignore_errors=True)
 
+    def _reg(self, manifest: SkillManifest, code: str = SAMPLE_CODE, **ready_kw) -> SkillManifest:
+        result = self.registry.register(manifest, code)
+        self.registry.ensure_agent_ready(manifest.name, **ready_kw)
+        return result
+
     @pytest.mark.asyncio
     async def test_subprocess_execution(self):
         simple_code = "def run(params):\n    return {'result': params.get('x', 0) + 1}\n"
         m = _sample_manifest(name="test.sub")
-        self.registry.register(m, simple_code)
+        self._reg(m, simple_code)
         result = await self.runner.execute("test.sub", {"x": 41})
         assert result.ok
         assert result.output == {"result": 42}
@@ -950,6 +976,7 @@ class TestSkillRunnerSubprocess:
         bad_code = "def run(p):\n    raise ValueError('sandbox test error')\n"
         m = _sample_manifest(name="test.bad")
         self.registry.register(m, bad_code)
+        self.registry.mark_evaluation_passed("test.bad")
         result = await self.runner.execute("test.bad")
         assert not result.ok
         assert "sandbox test error" in result.error
@@ -958,7 +985,7 @@ class TestSkillRunnerSubprocess:
     async def test_subprocess_with_declaration(self):
         simple_code = "def run(params):\n    return 'ok'\n"
         m = _sample_manifest(name="test.decl")
-        self.registry.register(m, simple_code)
+        self._reg(m, simple_code)
 
         decl = self.runner.declare("test.decl")
         assert decl is not None

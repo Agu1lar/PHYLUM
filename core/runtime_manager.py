@@ -38,6 +38,12 @@ from semantic_index import SemanticIndex
 from session_manager import SessionManager
 from state_graph import GraphExecutor, NodeType
 from task_graph import TaskGraphScheduler, SUCCESS_STATUSES
+from layer_contracts import (
+    CognitiveLayerProtocol,
+    ExecutionLayerProtocol,
+    OperationalLayerProtocol,
+    StateLayerProtocol,
+)
 from runtime_layers import CognitiveLayer, ExecutionLayer, OperationalLayer, StateLayer
 
 logger = logging.getLogger(__name__)
@@ -89,8 +95,10 @@ class RuntimeManager:
         self.provider_client = provider_client or MultiProviderClient()
 
         state_credential_store = credential_store or CredentialStore(self.persistence)
-        self.state_layer = StateLayer.build(self.persistence, credential_store=state_credential_store)
-        self.execution_layer = ExecutionLayer(
+        self.state_layer: StateLayerProtocol = StateLayer.build(
+            self.persistence, credential_store=state_credential_store,
+        )
+        self.execution_layer: ExecutionLayerProtocol = ExecutionLayer(
             safety=SafetyNode("safety"),
             tool_router=ToolRouterNode("tool_router"),
             reflection=ReflectionNode("reflection"),
@@ -102,12 +110,12 @@ class RuntimeManager:
             tool_router=self.execution_layer.tool_router,
             reflection=self.execution_layer.reflection,
         )
-        self.cognitive_layer = CognitiveLayer(
+        self.cognitive_layer: CognitiveLayerProtocol = CognitiveLayer(
             planner=PlannerAgent(supported_tools=canonical_supported_tools()),
             agentic_loop=agentic_loop,
             execution_strategy=ExecutionStrategy(),
         )
-        self.operational_layer = OperationalLayer.build()
+        self.operational_layer: OperationalLayerProtocol = OperationalLayer.build()
 
         # Backward-compatible aliases for existing runtime code and tests.
         self.credential_store = self.state_layer.credential_store
@@ -778,10 +786,58 @@ class RuntimeManager:
             },
             "recovery": {},
             "error": None,
+            "filesystem_scope": None,
         }
+
+    def _init_filesystem_scope(self, state: Dict[str, Any]) -> None:
+        from filesystem_scope import create_run_filesystem_scope
+
+        scope = create_run_filesystem_scope(
+            state["request_id"],
+            inputs=state.get("inputs"),
+        )
+        state["filesystem_scope"] = scope.to_dict()
+
+    def _bind_filesystem_scope(self, state: Dict[str, Any], task: Dict[str, Any]):
+        from filesystem_scope import (
+            bind_run_filesystem_scope,
+            get_run_filesystem_scope,
+            scope_from_state,
+        )
+
+        scope = get_run_filesystem_scope()
+        if scope is None:
+            raw = state.get("filesystem_scope")
+            if isinstance(raw, dict):
+                scope = scope_from_state(state)
+            else:
+                self._init_filesystem_scope(state)
+                scope = scope_from_state(state)
+        if scope is None:
+            return None
+        tool = task.get("tool")
+        params = task.get("params") or {}
+        if tool == "filesystem" and task.get("approval_granted"):
+            path = params.get("path") or params.get("dest")
+            action = task.get("action") or ""
+            if path and action in {"read", "list", "stat", "find_files"}:
+                scope.grant_read_path(path)
+            elif path:
+                scope.grant_write_path(path)
+            state["filesystem_scope"] = scope.to_dict()
+        return bind_run_filesystem_scope(scope)
+
+    def _reset_filesystem_scope(self, token) -> None:
+        from filesystem_scope import reset_run_filesystem_scope
+
+        if token is not None:
+            reset_run_filesystem_scope(token)
 
     async def _run_pipeline(self, request_id: str, *, resume: bool = False) -> None:
         state = self.active_runs[request_id]
+        if not state.get("filesystem_scope"):
+            self._init_filesystem_scope(state)
+            await self._persist_state(state)
         try:
             if resume:
                 await self._set_run_status(state, "resuming", current_node=state.get("current_node"))
@@ -1094,6 +1150,9 @@ class RuntimeManager:
             checkpoint=lambda session_update: self._checkpoint_agent_session(state, session_update),
         )
         state["agent_session"] = result.get("session") or {}
+        if result.get("cost"):
+            state["outputs"]["cost"] = result["cost"]
+            state["agent_session"]["cost"] = result["cost"]
         if result["status"] == "awaiting_input":
             await self._pause_for_handoff(state, result["handoff"])
             raise RunPausedError()
@@ -1301,7 +1360,21 @@ class RuntimeManager:
                 state["_traceback"],
             )
         await self._emit("run_failed", diagnostics, state=state)
+        await self._finalize_autonomy_metrics(state)
         await self._finalize_goal_for_run(state, completed=False, error=error)
+
+    async def _finalize_autonomy_metrics(self, state: Dict[str, Any]) -> None:
+        try:
+            from autonomy_metrics import AutonomyMetricsStore
+            from quality_dashboard import QualityDashboard
+
+            store = AutonomyMetricsStore(self.persistence)
+            metrics = await store.finalize_from_state(state)
+            await QualityDashboard(self.persistence).record_run(metrics)
+            state.setdefault("outputs", {})["autonomy_metrics"] = metrics.to_dict()
+            await self._persist_state(state)
+        except Exception:
+            logger.debug("autonomy metrics finalize failed for %s", state.get("request_id"), exc_info=True)
 
     async def _finalize_goal_for_run(self, state: Dict[str, Any], *, completed: bool, summary: Optional[str] = None, error: Optional[str] = None) -> None:
         goal_id = state.get("goal_id")
@@ -1391,6 +1464,7 @@ class RuntimeManager:
             {"request_id": state["request_id"], "status": state["status"], "reflection": final_reflection},
             state=state,
         )
+        await self._finalize_autonomy_metrics(state)
         await self._finalize_goal_for_run(state, completed=True, summary=summary)
 
     async def _set_run_status(
@@ -1506,6 +1580,16 @@ class RuntimeManager:
                 "goal_verification": goal_verification,
             },
         )
+        try:
+            from tool_action_confidence import ToolActionConfidenceStore, record_outcome_from_task_result_async
+
+            await record_outcome_from_task_result_async(
+                ToolActionConfidenceStore(self.persistence),
+                task,
+                result,
+            )
+        except Exception:
+            logger.debug("tool action confidence record failed", exc_info=True)
 
     async def _auto_persist_world_model(self, task: Dict[str, Any], result: Dict[str, Any]) -> None:
         """Automatically persist successful discoveries into the world model."""

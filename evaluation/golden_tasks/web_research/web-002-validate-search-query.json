@@ -1,0 +1,12 @@
+{
+  "id": "web-002-validate-search-query",
+  "domain": "web_research",
+  "title": "Web tool rejects search without query",
+  "tags": ["local"],
+  "requires": [],
+  "handler": "web.validate",
+  "handler_args": { "payload": { "action": "search_web" } },
+  "expect": {
+    "field_equals": { "validation_error": "contains:query" }
+  }
+}

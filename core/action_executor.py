@@ -104,6 +104,7 @@ class ActionExecutor:
                     raise RuntimeError(task["error"])
                 task["approval_granted"] = True
 
+            scope_token = None
             try:
                 task["attempt"] = int(task.get("attempt") or 0) + 1
                 task["status"] = "running"
@@ -111,9 +112,11 @@ class ActionExecutor:
                 await self.runtime._restore_execution_context(state, task)
                 await self._emit("task_started", {"request_id": state["request_id"], "task": task}, state=state)
                 self.runtime._raise_if_cancelled(state)
+                scope_token = self.runtime._bind_filesystem_scope(state, task)
+                exec_task = {**task, "request_id": state["request_id"]}
                 result = await self.runtime.execution_layer.execute_tool(
                     inputs=state["inputs"],
-                    task=task,
+                    task=exec_task,
                     cancel_event=self.runtime._cancel_event_for(state["request_id"]),
                 )
                 try:
@@ -316,6 +319,9 @@ class ActionExecutor:
                 )
                 await self.runtime._fail_run(state, str(exc))
                 raise
+            finally:
+                if scope_token is not None:
+                    self.runtime._reset_filesystem_scope(scope_token)
 
     async def _execute_script_recovery(self, state: Dict[str, Any], task: Dict[str, Any], script: Dict[str, Any]) -> Any:
         """Execute a script-based recovery when the primary tool path failed."""
