@@ -1,0 +1,161 @@
+{
+  "version": 2,
+  "domains": {
+    "office": {
+      "tool": "office",
+      "default_variant": "outlook_read",
+      "profile_action_map": {
+        "outlook_read_latest": "outlook_read",
+        "outlook_search_messages": "outlook_read",
+        "draft_email_with_attachment": "outlook_write",
+        "word_create_document": "word_write",
+        "save_as_document": "document_io",
+        "export_pdf": "document_io",
+        "open_document": "document_io",
+        "excel_read_range": "excel_read",
+        "list_workbook_sheets": "excel_read",
+        "word_find_text": "word_read",
+        "reveal_active_document_path": "outlook_read"
+      },
+      "variants": {
+        "outlook_read": {
+          "actions": ["outlook_read_latest", "outlook_search_messages", "reveal_active_document_path"],
+          "properties": ["action", "limit", "folder", "unread_only", "query"]
+        },
+        "outlook_write": {
+          "actions": ["draft_email_with_attachment"],
+          "properties": ["action", "to", "subject", "body", "attachment_path"]
+        },
+        "word_write": {
+          "actions": ["word_create_document"],
+          "properties": ["action", "content", "title", "path", "output_path"]
+        },
+        "word_read": {
+          "actions": ["word_find_text", "open_document"],
+          "properties": ["action", "path", "query"]
+        },
+        "excel_read": {
+          "actions": ["excel_read_range", "list_workbook_sheets"],
+          "properties": ["action", "path", "sheet_name", "range_address"]
+        },
+        "document_io": {
+          "actions": ["open_document", "export_pdf", "save_as_document"],
+          "properties": ["action", "path", "output_path", "app_name"]
+        },
+        "default": {
+          "actions": ["outlook_read_latest"],
+          "properties": ["action", "limit", "folder", "unread_only"]
+        }
+      }
+    },
+    "filesystem": {
+      "tool": "filesystem",
+      "default_variant": "list",
+      "profile_action_map": {
+        "list": "list",
+        "find_files": "list",
+        "stat": "list",
+        "read": "read",
+        "write": "write",
+        "copy": "write",
+        "move": "write",
+        "delete": "write",
+        "mkdir": "write",
+        "organize_downloads": "organize",
+        "organize_desktop": "organize",
+        "organize_directory": "organize"
+      },
+      "variants": {
+        "list": {
+          "actions": ["list", "find_files", "stat"],
+          "properties": ["action", "path", "pattern", "request_id"]
+        },
+        "read": {
+          "actions": ["read"],
+          "properties": ["action", "path", "request_id"]
+        },
+        "write": {
+          "actions": ["write", "copy", "move", "delete", "mkdir"],
+          "properties": ["action", "path", "content", "dest", "request_id"]
+        },
+        "organize": {
+          "actions": ["organize_downloads", "organize_desktop", "organize_directory", "clean_temp", "create_structure"],
+          "properties": ["action", "path", "template", "request_id"]
+        },
+        "default": {
+          "actions": ["list", "read", "write"],
+          "properties": ["action", "path", "content", "dest", "pattern", "request_id"]
+        }
+      }
+    },
+    "shell": {
+      "tool": "shell",
+      "default_variant": "run",
+      "profile_action_map": {
+        "run": "run"
+      },
+      "variants": {
+        "run": {
+          "properties": ["command", "shell", "timeout", "retries", "require_admin"]
+        },
+        "default": {
+          "properties": ["command", "shell", "timeout"]
+        }
+      }
+    },
+    "driver_manager": {
+      "tool": "driver_manager",
+      "default_variant": "printer_inspect",
+      "profile_action_map": {
+        "find_driver_candidates": "driver_search",
+        "list_drivers": "driver_search",
+        "device_status": "device_inspect",
+        "list_devices": "device_inspect",
+        "printer_status": "printer_inspect",
+        "printer_driver_info": "printer_inspect",
+        "printer_diagnostics": "printer_inspect",
+        "install_inf": "driver_install",
+        "add_driver_package": "driver_install"
+      },
+      "variants": {
+        "driver_search": {
+          "actions": ["find_driver_candidates", "list_drivers", "device_status"],
+          "properties": ["action", "query", "device_id", "printer_name", "path"]
+        },
+        "device_inspect": {
+          "actions": ["list_devices", "device_status", "list_drivers"],
+          "properties": ["action", "query", "device_id", "printer_name"]
+        },
+        "printer_inspect": {
+          "actions": ["printer_status", "printer_driver_info", "printer_diagnostics"],
+          "properties": ["action", "printer_name", "query"]
+        },
+        "driver_install": {
+          "actions": ["install_inf", "add_driver_package", "scan_hardware_changes"],
+          "properties": ["action", "path", "query", "device_id", "printer_name"]
+        },
+        "default": {
+          "actions": ["find_driver_candidates", "printer_status"],
+          "properties": ["action", "query", "printer_name", "path"]
+        }
+      }
+    },
+    "driver": {
+      "tool": "driver_manager",
+      "default_variant": "driver_search",
+      "profile_action_map": {
+        "find_driver_candidates": "driver_search"
+      },
+      "variants": {
+        "driver_search": {
+          "actions": ["find_driver_candidates", "list_drivers", "device_status"],
+          "properties": ["action", "query", "device_id", "printer_name", "path"]
+        },
+        "driver_install": {
+          "actions": ["install_inf", "add_driver_package", "scan_hardware_changes"],
+          "properties": ["action", "path", "query", "device_id", "printer_name"]
+        }
+      }
+    }
+  }
+}

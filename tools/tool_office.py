@@ -40,6 +40,7 @@ class OfficeInput(BaseModel):
     range_address: Optional[str] = None
     limit: Optional[int] = None
     folder: Optional[str] = None
+    unread_only: Optional[bool] = None
 
 
 class OfficeTool(BaseTool):
@@ -126,9 +127,14 @@ class OfficeTool(BaseTool):
                 summary = f"Busquei mensagens no Outlook por {payload.query}."
                 changed = False
             elif payload.action == "outlook_read_latest":
-                details = await self.agent.outlook_read_latest(limit=payload.limit or 10, folder=payload.folder or "inbox")
+                details = await self.agent.outlook_read_latest(
+                    limit=payload.limit or 10,
+                    folder=payload.folder or "inbox",
+                    unread_only=bool(payload.unread_only),
+                )
                 count = details.get("count", 0)
-                summary = f"Li {count} email(s) mais recente(s) do Outlook."
+                unread_label = " nao lido(s)" if payload.unread_only else ""
+                summary = f"Li {count} email(s){unread_label} do Outlook."
                 changed = False
             elif payload.action == "word_create_document":
                 details = await self.agent.word_create_document(

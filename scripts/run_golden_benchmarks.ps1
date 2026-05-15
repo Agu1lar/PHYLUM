@@ -17,5 +17,8 @@ if ($SkipRequires) { $args += "--skip-requires" }
 python @args
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-python -m pytest tests/test_golden_tasks.py tests/test_domain_benchmarks.py -m "golden or benchmark" -q --tb=short
+python evaluation/intent_golden_runner.py
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+python -m pytest tests/test_golden_tasks.py tests/test_domain_benchmarks.py tests/test_intent_golden.py -m "golden or benchmark" -q --tb=short
 exit $LASTEXITCODE

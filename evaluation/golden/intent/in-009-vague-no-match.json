@@ -1,0 +1,12 @@
+{
+  "id": "in-009-vague-no-match",
+  "profile_id": null,
+  "title": "Vague request stays below threshold",
+  "tags": ["intent", "negative"],
+  "user_text": "faz alguma coisa no computador",
+  "expect": {
+    "accepted": false,
+    "profile_id": null,
+    "routing_mode": "agentic"
+  }
+}

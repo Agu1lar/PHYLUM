@@ -16,4 +16,24 @@ body,
 body{
   margin:0;
   background:var(--bg);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.chat-scroll{
+  scrollbar-width: thin;
+  scrollbar-color: rgba(96, 165, 250, 0.35) transparent;
+}
+
+.chat-scroll::-webkit-scrollbar{
+  width: 8px;
+}
+
+.chat-scroll::-webkit-scrollbar-thumb{
+  border-radius: 999px;
+  background: rgba(96, 165, 250, 0.35);
+}
+
+.chat-scroll::-webkit-scrollbar-thumb:hover{
+  background: rgba(96, 165, 250, 0.55);
 }

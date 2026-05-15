@@ -1,0 +1,18 @@
+{
+  "id": "in-001-outlook-unread-pt",
+  "profile_id": "outlook_read_unread",
+  "title": "Outlook unread (PT) — office COM, not Exchange shell",
+  "tags": ["smoke", "intent", "office"],
+  "user_text": "retorne os ultimos emails nao lidos do outlook",
+  "expect": {
+    "accepted": true,
+    "profile_id": "outlook_read_unread",
+    "routing_mode": "fast_path",
+    "min_confidence": 0.72,
+    "resolved_tool": "office",
+    "resolved_action": "outlook_read_latest",
+    "resolved_params_contains": { "unread_only": true },
+    "forbidden_shell_commands": ["Get-Mailbox", "Get-ExMailbox"],
+    "max_llm_steps_note": "Fast path: 0 planning turns + 1 summarize LLM turn (≤2 total)"
+  }
+}

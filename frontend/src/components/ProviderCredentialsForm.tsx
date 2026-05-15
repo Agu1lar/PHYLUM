@@ -148,7 +148,13 @@ const ProviderCredentialsForm: React.FC<Props> = ({ provider }) => {
             onCopy={blockCopy}
             onCut={blockCopy}
             onContextMenu={event => event.preventDefault()}
-            placeholder={provider.configured ? 'Stored securely. Enter a new value to rotate.' : 'sk-...'}
+            placeholder={
+              provider.configured
+                ? 'Stored securely. Enter a new value to rotate.'
+                : provider.provider === 'groq'
+                  ? 'gsk_...'
+                  : 'sk-...'
+            }
             className="mt-1 w-full rounded border border-gray-700 bg-gray-900 p-2"
           />
         </label>

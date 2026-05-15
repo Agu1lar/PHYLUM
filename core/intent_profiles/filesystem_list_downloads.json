@@ -1,0 +1,21 @@
+{
+  "id": "filesystem_list_downloads",
+  "domain": "filesystem",
+  "schema_variant": "list",
+  "description": "List files in the user Downloads folder.",
+  "version": "1",
+  "required_tools": ["filesystem", "shell"],
+  "default_action": {
+    "tool": "filesystem",
+    "action": "list",
+    "params": {}
+  },
+  "param_defaults": {
+    "path": "~/Downloads"
+  },
+  "confidence_threshold": 0.65,
+  "signals": {
+    "require_any": ["download", "downloads", "baixados"],
+    "prefer_any": ["listar", "list", "mostrar", "arquivos", "files"]
+  }
+}

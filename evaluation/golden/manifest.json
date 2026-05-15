@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "description": "Intent profile golden benchmarks (Fase 1.5) — classification, routing, resolved actions.",
+  "benchmarks": [
+    "in-001-outlook-unread-pt",
+    "in-002-outlook-latest-pt",
+    "in-003-outlook-export-file-pt",
+    "in-004-filesystem-list-downloads-pt",
+    "in-005-filesystem-write-downloads-pt",
+    "in-006-driver-install-pt",
+    "in-007-shell-list-processes-pt",
+    "in-008-greeting-no-match",
+    "in-009-vague-no-match",
+    "in-010-outlook-unread-en"
+  ]
+}

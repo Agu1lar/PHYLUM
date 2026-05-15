@@ -1,0 +1,28 @@
+{
+  "id": "outlook_read_unread",
+  "domain": "office",
+  "schema_variant": "outlook_read",
+  "description": "List unread Outlook messages via headless COM (no Exchange shell).",
+  "version": "1",
+  "required_tools": ["office"],
+  "default_action": {
+    "tool": "office",
+    "action": "outlook_read_latest",
+    "params": {
+      "unread_only": true,
+      "limit": 10,
+      "folder": "inbox"
+    }
+  },
+  "param_defaults": {
+    "limit": 10,
+    "folder": "inbox",
+    "unread_only": true
+  },
+  "confidence_threshold": 0.72,
+  "signals": {
+    "require_any": ["outlook", "email", "emails", "correio"],
+    "prefer_any": ["nao lid", "não lid", "unread", "nao visualiz", "não visualiz", "nao vist", "show", "latest", "my"],
+    "exclude_any": ["arquivo", "file", "salvar", "save", "coloque", "write", "export"]
+  }
+}

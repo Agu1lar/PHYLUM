@@ -20,6 +20,7 @@ Provides four interrelated components:
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 import time
@@ -49,10 +50,18 @@ DEFAULT_PRICING: Dict[str, Dict[str, float]] = {
     "claude-opus-4-7": {"input": 15.00, "output": 75.00},
     "claude-3-5-sonnet": {"input": 3.00, "output": 15.00},
     "claude-3-5-haiku": {"input": 0.80, "output": 4.00},
+    "claude-haiku-4-5-20251001": {"input": 0.80, "output": 4.00},
     # Google
     "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
     "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
     "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
+    # Groq (approximate USD per 1M tokens)
+    "llama-3.3-70b-versatile": {"input": 0.59, "output": 0.79},
+    "llama-3.1-8b-instant": {"input": 0.05, "output": 0.08},
+    "openai/gpt-oss-20b": {"input": 0.10, "output": 0.50},
+    "openai/gpt-oss-120b": {"input": 0.15, "output": 0.75},
+    "mixtral-8x7b-32768": {"input": 0.59, "output": 0.79},
+    "gemma2-9b-it": {"input": 0.20, "output": 0.20},
 }
 
 FALLBACK_PRICING = {"input": 3.00, "output": 15.00}
@@ -112,13 +121,115 @@ class StepRecord:
         }
 
 
+def measure_llm_payload(
+    *,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    messages: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, int]:
+    """Estimate prompt-side payload size for an LLM turn (tools JSON + system text)."""
+    tool_list = tools or []
+    message_list = messages or []
+    tools_json = json.dumps(tool_list, ensure_ascii=False, separators=(",", ":"))
+    system_chars = 0
+    for message in message_list:
+        if message.get("role") != "system":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            system_chars += len(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    system_chars += len(str(block.get("text") or block.get("content") or ""))
+    return {
+        "tools_count": len(tool_list),
+        "tools_json_chars": len(tools_json),
+        "system_prompt_chars": system_chars,
+    }
+
+
+def tool_names_from_definitions(tools: Optional[List[Dict[str, Any]]]) -> List[str]:
+    names: List[str] = []
+    for tool in tools or []:
+        fn = tool.get("function") if isinstance(tool, dict) else None
+        name = (fn or {}).get("name") if isinstance(fn, dict) else None
+        if name:
+            names.append(str(name))
+    return names
+
+
+@dataclass
+class LLMTurnMetrics:
+    """Per agent-step LLM turn: tokens, payload size, tools offered vs called."""
+    step: int = 0
+    provider: str = ""
+    model: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    tools_count: int = 0
+    tools_json_chars: int = 0
+    system_prompt_chars: int = 0
+    tools_offered: int = 0
+    tools_called: int = 0
+    tools_offered_names: List[str] = field(default_factory=list)
+    tools_called_names: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        offered = self.tools_offered or self.tools_count
+        called = self.tools_called
+        return {
+            "step": self.step,
+            "provider": self.provider,
+            "model": self.model,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.prompt_tokens + self.completion_tokens,
+            "tools_count": offered,
+            "tools_offered": offered,
+            "tools_called": called,
+            "tools_utilization_pct": round(100.0 * called / max(offered, 1), 1),
+            "tools_offered_names": list(self.tools_offered_names),
+            "tools_called_names": list(self.tools_called_names),
+            "tools_json_chars": self.tools_json_chars,
+            "system_prompt_chars": self.system_prompt_chars,
+        }
+
+
+@dataclass
+class ModelCostBreakdown:
+    model: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0.0
+    llm_calls: int = 0
+    tool_steps: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "model": self.model,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "cost_usd": round(self.cost_usd, 6),
+            "llm_calls": self.llm_calls,
+            "tool_steps": self.tool_steps,
+            "share_of_cost_pct": 0.0,
+        }
+
+
 @dataclass
 class RunCostSummary:
     run_id: str
     model: str = ""
+    provider: str = ""
     total_tokens: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    tools_count: int = 0
+    tools_json_chars: int = 0
+    system_prompt_chars: int = 0
+    llm_turns: int = 0
     total_cost_usd: float = 0.0
     total_steps: int = 0
     total_tool_calls: int = 0
@@ -127,14 +238,27 @@ class RunCostSummary:
     total_errors: int = 0
     wall_time_ms: int = 0
     unique_tools: int = 0
+    by_model: List[ModelCostBreakdown] = field(default_factory=list)
     steps: List[StepRecord] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
+        by_model_dicts = []
+        for entry in self.by_model:
+            d = entry.to_dict()
+            if self.total_cost_usd > 0:
+                d["share_of_cost_pct"] = round(100.0 * entry.cost_usd / self.total_cost_usd, 2)
+            by_model_dicts.append(d)
         return {
-            "run_id": self.run_id, "model": self.model,
+            "run_id": self.run_id,
+            "model": self.model,
+            "provider": self.provider,
             "total_tokens": self.total_tokens,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
+            "tools_count": self.tools_count,
+            "tools_json_chars": self.tools_json_chars,
+            "system_prompt_chars": self.system_prompt_chars,
+            "llm_turns": self.llm_turns,
             "total_cost_usd": round(self.total_cost_usd, 6),
             "total_steps": self.total_steps,
             "total_tool_calls": self.total_tool_calls,
@@ -143,6 +267,7 @@ class RunCostSummary:
             "total_errors": self.total_errors,
             "wall_time_ms": self.wall_time_ms,
             "unique_tools": self.unique_tools,
+            "by_model": by_model_dicts,
             "steps": [s.to_dict() for s in self.steps],
         }
 
@@ -225,6 +350,7 @@ class CostTracker:
         run_id: str,
         *,
         model: str = "",
+        provider: str = "",
         pricing: Optional[Dict[str, Dict[str, float]]] = None,
         budget_usd: Optional[float] = None,
         budget_tokens: Optional[int] = None,
@@ -234,9 +360,41 @@ class CostTracker:
         self._pricing = pricing or dict(DEFAULT_PRICING)
         self.budget_usd = budget_usd
         self.budget_tokens = budget_tokens
+        self.provider = provider
         self._steps: List[StepRecord] = []
+        self._llm_turn_metrics: List[LLMTurnMetrics] = []
+        self._peak_tools_count = 0
+        self._peak_tools_json_chars = 0
+        self._peak_system_prompt_chars = 0
         self._start_time = time.time()
         self._tools_used: set = set()
+        self._by_model: Dict[str, ModelCostBreakdown] = {}
+
+    def _model_key(self, model: Optional[str]) -> str:
+        return (model or self.model or "unknown").strip() or "unknown"
+
+    def _accumulate_model_usage(
+        self,
+        model: Optional[str],
+        *,
+        usage: TokenUsage,
+        cost_usd: float,
+        llm_call: bool = False,
+        tool_step: bool = False,
+    ) -> None:
+        key = self._model_key(model)
+        entry = self._by_model.get(key)
+        if entry is None:
+            entry = ModelCostBreakdown(model=key)
+            self._by_model[key] = entry
+        entry.prompt_tokens += usage.prompt_tokens
+        entry.completion_tokens += usage.completion_tokens
+        entry.total_tokens += usage.total_tokens
+        entry.cost_usd += cost_usd
+        if llm_call:
+            entry.llm_calls += 1
+        if tool_step:
+            entry.tool_steps += 1
 
     def _model_pricing(self, model: Optional[str] = None) -> Dict[str, float]:
         m = model or self.model
@@ -279,6 +437,8 @@ class CostTracker:
         )
         self._steps.append(record)
         self._tools_used.add(tool)
+        if model or self.model:
+            self._accumulate_model_usage(model, usage=usage, cost_usd=cost, tool_step=True)
         return record
 
     def record_llm_usage(
@@ -304,7 +464,103 @@ class CostTracker:
             tokens=usage, cost_usd=cost,
         )
         self._steps.append(record)
+        effective_model = model or self.model
+        if effective_model:
+            self.model = self.model or effective_model
+        self._accumulate_model_usage(effective_model, usage=usage, cost_usd=cost, llm_call=True)
         return usage
+
+    def record_llm_turn(
+        self,
+        *,
+        step: int,
+        provider: str,
+        model: Optional[str] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        cache_creation_tokens: int = 0,
+        cache_read_tokens: int = 0,
+    ) -> LLMTurnMetrics:
+        """Record tokens + payload size for one LLM completion (all providers)."""
+        if provider:
+            self.provider = provider
+        effective_model = model or self.model
+        if effective_model:
+            self.model = effective_model
+
+        if prompt_tokens or completion_tokens:
+            self.record_llm_usage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cache_creation_tokens=cache_creation_tokens,
+                cache_read_tokens=cache_read_tokens,
+                model=effective_model,
+            )
+
+        payload = measure_llm_payload(tools=tools, messages=messages)
+        offered_names = tool_names_from_definitions(tools)
+        offered_count = payload["tools_count"]
+        self._peak_tools_count = max(self._peak_tools_count, offered_count)
+        self._peak_tools_json_chars = max(self._peak_tools_json_chars, payload["tools_json_chars"])
+        self._peak_system_prompt_chars = max(
+            self._peak_system_prompt_chars,
+            payload["system_prompt_chars"],
+        )
+        turn = LLMTurnMetrics(
+            step=step,
+            provider=provider or self.provider,
+            model=effective_model or "",
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            tools_count=offered_count,
+            tools_json_chars=payload["tools_json_chars"],
+            system_prompt_chars=payload["system_prompt_chars"],
+            tools_offered=offered_count,
+            tools_called=0,
+            tools_offered_names=offered_names,
+            tools_called_names=[],
+        )
+        self._llm_turn_metrics.append(turn)
+        return turn
+
+    def complete_agent_step_metrics(
+        self,
+        step: int,
+        *,
+        tool_calls: Optional[List[Any]] = None,
+    ) -> Optional[LLMTurnMetrics]:
+        """Attach tools-called counts after the model returns tool_calls (Fase 0.2)."""
+        called_names: List[str] = []
+        for call in tool_calls or []:
+            name = getattr(call, "name", None)
+            if name:
+                called_names.append(str(name))
+            elif isinstance(call, dict):
+                called_names.append(str(call.get("name") or call.get("tool") or ""))
+        called_names = [name for name in called_names if name]
+        for turn in reversed(self._llm_turn_metrics):
+            if turn.step != step:
+                continue
+            turn.tools_called = len(called_names)
+            turn.tools_called_names = called_names
+            return turn
+        return None
+
+    def get_agent_step_metrics(self, step: int) -> Optional[LLMTurnMetrics]:
+        for turn in reversed(self._llm_turn_metrics):
+            if turn.step == step:
+                return turn
+        return None
+
+    def agent_step_metrics_dict(self, step: int) -> Optional[Dict[str, Any]]:
+        turn = self.get_agent_step_metrics(step)
+        return turn.to_dict() if turn else None
+
+    @property
+    def llm_turn_metrics(self) -> List[LLMTurnMetrics]:
+        return list(self._llm_turn_metrics)
 
     @property
     def total_tokens(self) -> int:
@@ -358,13 +614,21 @@ class CostTracker:
             return True
         return False
 
+    def model_breakdown(self) -> List[ModelCostBreakdown]:
+        return sorted(self._by_model.values(), key=lambda m: m.cost_usd, reverse=True)
+
     def summary(self) -> RunCostSummary:
         return RunCostSummary(
             run_id=self.run_id,
             model=self.model,
+            provider=self.provider,
             total_tokens=self.total_tokens,
             prompt_tokens=self.total_prompt_tokens,
             completion_tokens=self.total_completion_tokens,
+            tools_count=self._peak_tools_count,
+            tools_json_chars=self._peak_tools_json_chars,
+            system_prompt_chars=self._peak_system_prompt_chars,
+            llm_turns=len(self._llm_turn_metrics),
             total_cost_usd=self.total_cost_usd,
             total_steps=self.total_steps,
             total_tool_calls=self.total_steps,
@@ -373,11 +637,32 @@ class CostTracker:
             total_errors=self.total_errors,
             wall_time_ms=self.wall_time_ms,
             unique_tools=len(self._tools_used - {"_llm"}),
+            by_model=self.model_breakdown(),
             steps=list(self._steps),
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        return self.summary().to_dict()
+        data = self.summary().to_dict()
+        data["llm_turn_metrics"] = [turn.to_dict() for turn in self._llm_turn_metrics]
+        data["agent_step_metrics"] = data["llm_turn_metrics"]
+        return data
+
+    def payload_summary_dict(self) -> Dict[str, Any]:
+        """Compact run-level payload metrics for events and UI."""
+        summary = self.summary()
+        return {
+            "run_id": summary.run_id,
+            "provider": summary.provider,
+            "model": summary.model,
+            "prompt_tokens": summary.prompt_tokens,
+            "completion_tokens": summary.completion_tokens,
+            "total_tokens": summary.total_tokens,
+            "tools_count": summary.tools_count,
+            "tools_json_chars": summary.tools_json_chars,
+            "system_prompt_chars": summary.system_prompt_chars,
+            "llm_turns": summary.llm_turns,
+            "total_cost_usd": round(summary.total_cost_usd, 6),
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ PHYLUM is an agentic runtime that runs entirely on your machine. No data leaves 
 
 - **Local-first**: everything runs on your hardware. Your data never leaves your machine.
 - **Open-source (GPLv3)**: open, auditable code with no vendor lock-in.
-- **You choose the LLM**: Anthropic, OpenAI, Gemini, OpenRouter or any compatible provider. Bring your own API key.
+- **You choose the LLM**: Anthropic, OpenAI, Gemini, Groq, OpenRouter or any compatible provider. Bring your own API key.
 - **Zero telemetry**: no tracking, no analytics, no phone-home.
 - **Real autonomy**: the agent plans, executes, reflects, recovers from failures and learns — without relying on proprietary cloud services.
 
@@ -43,7 +43,7 @@ The entire cycle runs as a **directed state graph** with 13 node types and condi
 |---|---|
 | Backend | Python 3.11+, FastAPI, Uvicorn, aiosqlite |
 | Frontend | React, Vite, WebSocket |
-| LLM Integration | Multi-provider (OpenAI, Anthropic, Gemini), native tool-calling |
+| LLM Integration | Multi-provider (OpenAI, Anthropic, Gemini, Groq), native tool-calling |
 | Windows Automation | pywinauto, pywin32, WMI, win32com (COM) |
 | Web Automation | Playwright |
 | Document Processing | pypdf, PyMuPDF, python-docx, openpyxl, extract-msg, Pillow, pytesseract |
@@ -62,7 +62,7 @@ These capabilities have graduated from the roadmap and are part of PHYLUM's curr
 - **Reasoning/execution layer separation**: `CognitiveLayer` handles planning, LLM loop and strategy decisions; `OperationalLayer` handles task graph, recovery and graph executors; `ExecutionLayer` runs tools, safety, reflection and desktop automation; `StateLayer` handles persistence, World Model, Strategy Memory, durable queue and sessions.
 - **Layer contracts (Protocol interfaces)**: `layer_contracts.py` defines `@runtime_checkable` Protocols per layer (`CognitiveLayerProtocol`, `OperationalLayerProtocol`, `ExecutionLayerProtocol`, `StateLayerProtocol`); `RuntimeManager` depends on interfaces, not implementations; `tests/test_layer_contracts.py` verifies conformance, stub substitutability, forbidden cross-imports and acyclic dependency direction.
 - **Architectural invariants (CI)**: nine documented invariants (`INV-01`…`INV-09`) in `architecture_invariants.py` — layer protocol conformance, module import boundaries, acyclic dependencies, typed `RuntimeManager` fields; enforced on every CI run via `python core/architecture_invariants.py` and `pytest -m architecture`.
-- **Golden tasks and domain benchmarks**: `evaluation/golden_tasks/` (17 representative tasks with fixtures), `evaluation/golden_runner.py`, `evaluation/benchmark_domains.py` (8 domains: Office, filesystem, browser, Windows UI, drivers, documents, web research); `pytest -m golden` / `pytest -m benchmark`; `scripts/run_golden_benchmarks.ps1`.
+- **Golden tasks and domain benchmarks**: `evaluation/golden_tasks/` (17 representative tasks with fixtures), `evaluation/golden_runner.py`, `evaluation/benchmark_domains.py` (8 domains: Office, filesystem, browser, Windows UI, drivers, documents, web research), intent profile goldens in `evaluation/golden/intent/`; `pytest -m golden` / `pytest -m benchmark`; `scripts/run_golden_benchmarks.ps1`.
 - **Parallel tool calls**: when the LLM emits multiple independent tool calls in the same turn, the agentic loop executes them in parallel via `asyncio.gather`, preserving the original order of results in the message history.
 - **Parallel sub-agents**: `subagent.run_parallel_branches` creates isolated branches with a specific objective, its own budget for steps/timeout/tools/tokens/cost, result merging and cascading cancellation when a branch satisfies the objective.
 - **Anthropic extended thinking**: Claude models with thinking receive `thinking: adaptive`, extended timeout, thinking block persistence and `agent_thinking` events for observability.
@@ -101,10 +101,19 @@ These capabilities have graduated from the roadmap and are part of PHYLUM's curr
 - **Hung process reaper**: when a tool times out on a frozen app (e.g. Excel COM hang), the reaper confirms the process is hung via `IsHungAppWindow`, kills it with `taskkill /F` to free the blocked thread, and emits a `process_reaped` event.
 - **LLM API retry with backoff**: transient errors (HTTP 429/500/502/503/529) and connection failures are retried up to 3 times with exponential backoff, `Retry-After` header parsing, and structured `LLMApiError` on exhaustion.
 - **Agentic pipeline fallback**: if the LLM-driven agentic pipeline fails (API error, parsing error), the system automatically falls back to the local heuristic pipeline, preserving any work already completed by the agentic pipeline.
+- **Pre-execution tool validation**: `tool_validation_middleware` validates Pydantic schemas and `tool.validate()` before safety/approval/execution; invalid calls are re-injected as `tool` messages with field hints (`PRE_VALIDATION_FAILED`) without spending an execution step.
+- **Model routing by complexity**: `model_router.py` classifies requests (`trivial` / `simple` / `complex` / `multi_step`) and selects fast models (Haiku, `gpt-4o-mini`, Gemini Flash) or full models (Sonnet, `gpt-4.1`) per provider before the agentic loop runs. On fast-tier LLM failure, the agentic loop escalates once to the full-tier model (`model_escalated` event; disable with `AGENTE_MODEL_FALLBACK=0`).
+- **Per-model cost metrics**: `CostTracker` aggregates token usage and USD cost per model in `RunCostSummary.by_model` (share of run cost, LLM call counts); exposed via run `cost` output and `execution_economics` `get_summary`.
 - **Tool result compaction**: `_compact_tool_result()` strips binary data, caps stdout/stderr at 1500 chars, removes internal diagnostic fields, and limits total tool result size to 3000 chars before sending to the LLM.
 - **Compact system prompt**: the system prompt was reduced by 82% (from ~1933 tokens to ~357 tokens), focusing on actionable directives rather than verbose examples. Includes a hint for `ConvertTo-Json` over `Format-Table` to save output tokens.
 - **Anthropic message merging**: consecutive tool results are merged into a single `user` message with multiple `tool_result` blocks, preventing HTTP 400 errors from Anthropic's alternating-role requirement.
 - **Automatic dependency management**: when a sandbox script fails with `ModuleNotFoundError`/`ImportError`, the system detects the missing package (with a mapping of 25+ known module→package pairs like `cv2`→`opencv-python`, `PIL`→`Pillow`), routes through the safety approval node (`approval_mode: single`), installs via `pip`, and retries the original script — all without wasting an LLM step.
+- **LLM payload metrics (per run and per step)**: `CostTracker` records `prompt_tokens`, `completion_tokens`, `tools_json_chars`, `system_prompt_chars`, `tools_count`, `provider` and `model`; events `llm_turn_metrics` and `agent_step_metrics` expose tools offered vs called per agent step; final `cost` on the run includes `agent_step_metrics[]`.
+- **Run metrics JSONL export**: `scripts/export_run_metrics.py` / `export_run_metrics.ps1` exports persisted runs from `agent_state.db` to JSONL and compares before/after averages (`--compare before.jsonl after.jsonl`) for optimization work.
+- **Task-class budget targets**: `task_budget_targets.py` classifies requests (`conversation`, `outlook_read`, `outlook_export`, `driver_install`, `simple_desktop`, `complex_automation`) with soft per-class limits (e.g. Outlook read → ≤8k prompt tokens on turn 1); emits `task_budget_profile` at run start and `task_budget_warning` when exceeded; `cost.budget_compliance` on completion.
+- **Intent profiles and direct routing (Fase 1)**: declarative profiles in `core/intent_profiles/` (`domain`, `required_tools`, `default_action`, `param_defaults`, `confidence_threshold`); `intent_classifier.py` scores user text via profile `signals` (no greeting blocklists); optional **fast path** (`intent_fast_path.py`) runs the native tool then one LLM summarize turn (`AGENTE_INTENT_FAST_PATH=0` to disable); low confidence or fast-path failure → full agentic loop (`intent_routing.py`, `agentic_fallback` event); learned profiles promoted to `~/.agente/intent_profiles/` after repeated successes (`intent_profile_learner.py`); golden suite `evaluation/golden/intent/` + `intent_golden_runner.py`.
+- **LLM payload planner and progressive tool disclosure (Fase 2)**: `core/llm_payload_planner.py` — `plan_llm_payload(catalog, user_text, complexity, provider) → ToolPayloadPlan`; ranking, domain affinity (`_TOOL_AFFINITY`) e `select_tools_for_request` (re-export em `tool_selector.py`); níveis `minimal` / `focused` / `standard` / `full` com caps configuráveis (`AGENTE_DISCLOSURE_STANDARD_MAX`, `AGENTE_PAYLOAD_FULL`); escalonamento automático no `agentic_loop` (evento `tool_disclosure_expanded` após falhas tool/schema/execução); replanejamento de tools por step; caps por provider via config (sem ramos por provedor no planner).
+- **Tool schema optimizer and domain tables (Fase 3)**: `core/tool_schema_optimizer.py` — espelho JSON Schema para o LLM (cópia profunda; catálogo canônico imutável); poda de `action.enum` e propriedades por `IntentProfile` / domínio; truncagem de `description` por `DisclosureLevel`; `core/schema_domain_registry.py` + `schema_domain_tables.json` (overlay em `~/.agente/schema_domain_tables.json`); perfis com `schema_variant` / `tool_variants`; `core/schema_equivalence.py` garante que args aceites pelo espelho normalizam para o mesmo task que o canónico; ativar com `AGENTE_SCHEMA_OPTIMIZER=1`.
 
 ---
 
@@ -471,6 +480,8 @@ The backend exposes endpoints to verify operational readiness:
 | `test_codebase_map.py` | CodebaseMap, PythonScanner, PatternScanner, incremental updates |
 | `test_diagnostic_and_planner.py` | TestDiagnosticLoop, PatchPlanner, RiskAssessor, DependencyOrderer |
 | `test_workspace_dev.py` | Workspace awareness snapshot, refactor scope and filesystem guardrails |
+| `test_tool_validation_middleware.py` | Pre-execution validation, reinjection messages, budgets and metrics |
+| `test_model_router.py` | Complexity classifier and model pool routing |
 | `test_heartbeat_watchdog.py` | HeartbeatEmitter, ProgressTracker, ProcessWatchdog, FrozenWindowDetector |
 | `test_hung_process_reaper.py` | Hung process reaper, target context, IsHungAppWindow integration |
 | `test_contextual_boost_crossref.py` | Contextual boosting, cross-reference linking, graph traversal |
@@ -483,21 +494,261 @@ The backend exposes endpoints to verify operational readiness:
 | `test_architecture_invariants.py` | INV-01…INV-09 architectural invariant enforcement |
 | `test_golden_tasks.py` | Golden task suite loader and runner |
 | `test_domain_benchmarks.py` | Per-domain benchmark aggregation |
+| `test_intent_golden.py` | Intent profile classification, routing and resolved-action goldens |
+| `test_intent_classifier.py` | Profile-driven intent scoring |
+| `test_intent_profile_registry.py` | Declarative profile loader and validation |
+| `test_intent_routing.py` | Routing mode, learned profile promotion |
+| `test_llm_payload_planner.py` | Disclosure levels, expansion, provider caps, tool ranking |
+| `test_tool_schema_optimizer.py` | Schema pruning by intent profile/domain, canonical immutability |
+| `test_schema_domain_registry.py` | Domain→action tables, user overlay, schema_variant / tool_variants |
+| `test_schema_mirror_equivalence.py` | Mirror schema args → same ``normalize_agentic_task`` as canonical |
+| `test_tool_selector.py` | Back-compat re-export of planner selection |
 | Others (26 suites) | Runtime, providers, shell, filesystem, network, planner, reflection, downloads, extended thinking, parallel calls, agentic discovery, persistence, and more |
 
 ---
 
 ## Future roadmap
 
+### Otimização de contexto LLM (todos os provedores)
+
+**Objetivo:** reduzir tokens por turno (custo e latência) sem sacrificar taxa de sucesso — na prática, tornar o agente **mais direto** (menos voltas, menos ferramentas irrelevantes, menos schema inflado no prompt).
+
+**Problema observado:** enviar o catálogo completo de tools + system prompt longo + histórico repetido consome dezenas de milhares de tokens por run (ex.: Claude em tarefas simples como “listar e-mails do Outlook”). Atalhos por provedor (ex.: só Groq) não escalam; a solução deve ser **uma camada única** aplicada a Anthropic, OpenAI, Gemini, Groq, etc.
+
+**Princípios de desenho (literatura / prática 2024–2026):**
+
+| Princípio | Referência / ideia | No PHYLUM |
+|-----------|-------------------|-----------|
+| **Progressive tool disclosure** | Carregar só tools relevantes ao turno; expandir se falhar (ToolNet, ACL-style limits) | Implementado: `llm_payload_planner` + expansão automática |
+| **Schema pruning por domínio** | Enviar só `action` enum e propriedades necessárias ao intent detectado | Implementado: `tool_schema_optimizer` + `schema_domain_registry` |
+| **Intent routing direto** | Tarefas de alta confiança → 1 tool, 1 ação, sem “adivinhar” via shell | Implementado: `intent_profiles` + fast path + fallback agentic |
+| **Prompt tiering** | System prompt curto por complexidade; blocos longos sob demanda | Variantes em `PromptCache` ligadas a `model_router` |
+| **Observação comprimida** | Resumir tool results antes de reinjetar (ReAct / MemGPT-style) | Estender `ContextWindowManager` + orçamento por run |
+| **Cache de prefixo** | Reutilizar system + tools estáveis (Anthropic/OpenAI cache) | Já parcial em `PromptCache`; generalizar métricas |
+| **Medir antes de cortar** | Sem baseline, otimização quebra qualidade | `execution_economics` + regressão golden |
+
+**Estado atual (baseline — não remover sem substituir):**
+
+- `core/model_router.py` — fast/full por complexidade + escalação após falha.
+- `providers/prompt_cache.py` — cache de prompt/tools por provedor.
+- `core/context_window.py` — compressão de histórico.
+- `core/tool_validation_middleware.py` — pré-validação pós-LLM (não reduz tokens de ida).
+- `core/execution_economics.py`, `core/run_metrics_export.py`, `core/task_budget_targets.py` — medição (métricas, export JSONL, orçamentos por classe).
+- `core/intent_profile_registry.py`, `core/intent_classifier.py`, `core/intent_routing.py`, `core/intent_fast_path.py`, `core/intent_profile_learner.py`, `core/llm_payload_planner.py`, `evaluation/intent_golden_runner.py` — intent routing + payload planner (Fases 1–2).
+- `core/tool_schema_optimizer.py`, `core/schema_domain_registry.py`, `core/schema_equivalence.py` — schema mirror + domain tables + equivalence (Fase 3).
+
+---
+
+#### Fase 4 — Prompt e histórico (tiering + compressão)
+
+Atacar o outro grande consumidor (system + messages).
+
+- [ ] **4.1** System prompt em camadas: `core` (sempre) + `domain` (injeta só se intent/domain detectado) + `advanced` (skills, subagent — só complex/multi_step).
+- [ ] **4.2** Integrar tier de prompt com `model_router.ComplexityLevel` (trivial → sem bloco TOOLS longo).
+- [ ] **4.3** Comprimir tool results antes de append na próxima mensagem (resumo estruturado JSON curto; corpo de e-mail truncado com flag `truncated`).
+- [ ] **4.4** Política de reinjeção: `ReinjectionBudget` alinhado a tokens, não só contagem de falhas.
+- [ ] **4.5** Documentar uso de cache por provedor (Anthropic `cache_control`, OpenAI prompt caching onde disponível) com hit-rate nas métricas da Fase 0.
+
+**Critério de aceite:** run “ola” não envia enum de 10 actions; run complexo ainda vê instruções de skills/subagent.
+
+---
+
+#### Fase 5 — Robustez, qualidade e operação
+
+Otimizar sem regressão.
+
+- [ ] **5.1** Suite `evaluation/llm_payload_benchmarks/` — mesmos cenários em Anthropic + Groq + OpenAI mini, comparar tokens e sucesso.
+- [ ] **5.2** Alarmes: se `prompt_tokens` &gt; P95 histórico para um profile → log `payload_bloat_warning`.
+- [ ] **5.3** Feature flags: `AGENTE_PAYLOAD_PLANNER=1`, `AGENTE_INTENT_FAST_PATH=1`, rollout gradual.
+- [ ] **5.4** UI: mostrar no run `disclosure_level`, `tools_offered`, `estimated_prompt_weight` (opcional, Fase 0.3).
+- [ ] **5.5** Atualizar `docs/MODEL_TESTING_REGISTRY.md` por provedor após cada fase.
+
+**Critério de aceite:** golden benchmarks verdes; P50 de tokens do turno 1 cai ≥40% em tarefas “simples” sem queda &gt;5% na taxa de sucesso.
+
+---
+
+### Segurança, operação e aprendizagem (Windows — inspiração [Missy](https://github.com/MissyLabs/missy))
+
+**Objetivo:** endurecer o runtime local-first no Windows com política explícita default-deny, auditoria completa, recuperação de sessão, aprendizagem de padrões vencedores e operação proativa — sem copiar dependências Linux (Landlock, AT-SPI, edge voice).
+
+**Princípio:** reutilizar `EventBus`, `PolicyEngine`, `strategy_memory`, `intent_profile_learner`, `DurableQueue` e scopes por run; novos módulos como **gate único** antes de side effects, não duplicar o loop agentic.
+
+| Missy (Linux) | PHYLUM (Windows) |
+|---------------|------------------|
+| PolicyHTTPClient + presets | `policy_gateway` + `~/.agente/policy.yaml` + presets |
+| Audit JSONL assinado | Export JSONL do EventBus + assinatura opcional (DPAPI) |
+| AI Playbook | `strategy_memory` + promoção a intent profile / skill |
+| Circuit breaker provider | Estado degraded por `(provider, model)` |
+| `missy recover` | `recover_run` + UI retomar |
+| Triggers / scheduler | Task Scheduler + fila durable |
+| Prompt injection / secrets | `prompt_guard` + `response_censor` |
+| Modos full / safe-chat | `chat_only` / `assisted` / `full_agent` na API |
+
+---
+
+#### Fase 6 — Auditoria estruturada e configuração versionada
+
+Base operacional: tudo o que acontece fica registado e a config é reversível.
+
+- [ ] **6.1** Export append-only JSONL por run: hook no `EventBus` → `~/.agente/audit/{YYYY-MM-DD}.jsonl` (campos: `policy_decision`, `tool_call`, `approval`, `provider_call`, `cost`, `intent_profile`, `disclosure_level`).
+- [ ] **6.2** Eventos normalizados para auditoria: `audit.tool_started`, `audit.tool_finished`, `audit.policy_verdict`, `audit.approval_granted|denied`.
+- [ ] **6.3** CLI `scripts/audit_recent.ps1` — últimas N entradas, filtro por `request_id` / tool / status (equivalente a `missy audit recent`).
+- [ ] **6.4** Presets de política Windows: `config/policy_presets/windows_common.yaml` (hosts Microsoft Learn, Graph, winget CDN, etc.) + merge com overlay do utilizador.
+- [ ] **6.5** Overlay utilizador: `~/.agente/policy.yaml` (read/write paths, hosts permitidos, shell mode) com validação no arranque.
+- [ ] **6.6** Config versionada: backups automáticos em `~/.agente/config_backups/` antes de alterações de providers/settings.
+- [ ] **6.7** `scripts/config_diff.ps1` — diff entre backup e config ativa; `scripts/config_rollback.ps1 -BackupId <id>`.
+- [ ] **6.8** Testes: escrita JSONL, rotação diária, preset merge, rollback sem corromper runtime.
+
+**Critério de aceite:** qualquer run agentic gera trilho JSONL consultável; rollback de config restaura estado anterior em &lt;30s.
+
+---
+
+#### Fase 7 — Policy gateway unificado (default-deny)
+
+Um único ponto de decisão antes de rede, filesystem e shell — além do `PolicyEngine` por task.
+
+- [ ] **7.1** Módulo `core/policy_gateway.py`: `evaluate_outbound(action, tool, params, run_scope) → allow|deny|require_approval`.
+- [ ] **7.2** Integrar gateway em `action_executor` / sandbox: nenhuma tool com side effect passa sem verdict do gateway.
+- [ ] **7.3** **Rede:** allowlist de hosts/domínios/CIDR para `web`, `browser`, downloads; deny por defeito fora da lista (modo estrito via `AGENTE_POLICY_STRICT_NETWORK=1`).
+- [ ] **7.4** **Filesystem:** generalizar `filesystem_scope` + regras do preset YAML (read roots, write roots, deny `System32`, etc.).
+- [ ] **7.5** **Shell:** whitelist opcional de executáveis (`powershell.exe`, `git.exe`, …) em modo estrito; manter `risk_classifier` como camada complementar.
+- [ ] **7.6** **HTTP L7:** validar método + host + path pattern em `web.fetch` / REST tools (equivalente REST policy Missy).
+- [ ] **7.7** Modos de política: `permissive` (atual), `standard` (scopes + risk), `strict` (default-deny rede + shell whitelist).
+- [ ] **7.8** UI/API: expor `policy_mode` e último `policy_verdict` no painel do run.
+- [ ] **7.9** Testes golden: cenários allow/deny por domínio office, shell bloqueado, fetch bloqueado.
+
+**Critério de aceite:** com `strict`, fetch para host não listado é negado antes de executar; office COM dentro de scope continua permitido.
+
+---
+
+#### Fase 8 — AI Playbook (padrões vencedores → contexto e perfis)
+
+Fechar o ciclo aprendizagem sem listas manuais de frases.
+
+- [ ] **8.1** Após run `success`, gravar playbook entry: `(goal_fingerprint, tool, action, params_template, duration_ms, cost)`.
+- [ ] **8.2** Store em `strategy_memory` com contador de sucessos e `last_used_at` (namespace `playbook`).
+- [ ] **8.3** No início do turno LLM: injetar top-3 padrões por similaridade (BM25 + embeddings existentes).
+- [ ] **8.4** Promoção automática: após ≥3 sucessos do mesmo fingerprint → candidato a **intent profile** (`intent_profile_learner`) ou skill draft.
+- [ ] **8.5** Evento `playbook_pattern_promoted` com metadados para auditoria (Fase 6).
+- [ ] **8.6** UI: secção “Padrões aprendidos” (listar, desativar, exportar JSON).
+- [ ] **8.7** Testes: 3 runs iguais promovem profile; padrão desativado não injeta no prompt.
+
+**Critério de aceite:** tarefa repetida (“listar emails Outlook”) usa fast path ou playbook inject sem replanejar do zero.
+
+---
+
+#### Fase 9 — Resiliência de providers e recuperação de sessão
+
+- [ ] **9.1** Circuit breaker por `(provider, model)`: após N falhas consecutivas → estado `degraded` com backoff exponencial (cap 300s).
+- [ ] **9.2** Eventos: `provider_circuit_open`, `provider_circuit_half_open`, `provider_circuit_closed`.
+- [ ] **9.3** Fallback automático para pool alternativo (Ollama/local/outro provider configurado) enquanto circuit aberto.
+- [ ] **9.4** Métricas: contagem open/half-open por provider no export JSONL e UI.
+- [ ] **9.5** Checkpoint de sessão agentic: serializar mensagens, `disclosure_expansion_step`, tasks pendentes, approvals em fila.
+- [ ] **9.6** `scripts/recover_run.ps1 -RequestId <id>` — retoma loop do último checkpoint válido.
+- [ ] **9.7** UI: botão “Retomar run” na lista de sessões incompletas.
+- [ ] **9.8** Idempotência básica: marcar mutações já aplicadas para não repetir após recover (ligação com state graph).
+- [ ] **9.9** Testes: simular 5 falhas API → circuit open; recover continua do step N.
+
+**Critério de aceite:** crash a meio do run retoma sem reexecutar tools já concluídas com sucesso.
+
+---
+
+#### Fase 10 — Hardening de prompt e segredos
+
+- [ ] **10.1** `safety/prompt_guard.py`: normalização Unicode + padrões PT/EN de prompt injection antes de enviar ao LLM.
+- [ ] **10.2** Modo `AGENTE_PROMPT_GUARD=strict|warn|off`; evento `prompt_injection_suspected` com score.
+- [ ] **10.3** `safety/response_censor.py`: redigir API keys, tokens, passwords na resposta ao utilizador (regex + entropia).
+- [ ] **10.4** **Prompt drift:** hash do system prompt por run; alerta `prompt_drift_detected` se mudar entre steps do mesmo `request_id`.
+- [ ] **10.5** Integrar censor no streaming SSE/WebSocket antes de exibir ao utilizador.
+- [ ] **10.6** Testes: payloads de injection conhecidos bloqueados ou flagged; secret fictício nunca aparece em texto final.
+
+**Critério de aceite:** resposta com `sk-...` fictício é censurada; drift entre steps dispara evento auditável.
+
+---
+
+#### Fase 11 — Triggers proativos e agendamento (Windows)
+
+- [ ] **11.1** Scheduler sobre `DurableQueue`: jobs com `scheduled_at` + expressões cron (biblioteca leve, timezone local).
+- [ ] **11.2** Integração **Task Scheduler** Windows: criar/atualizar tarefa ao registar trigger persistente.
+- [ ] **11.3** Trigger **filesystem**: pasta monitorizada (Downloads, Inbox export) via WMI / `FileSystemWatcher` wrapper.
+- [ ] **11.4** Trigger **threshold**: disco &gt;90%, memória, impressora offline (WMI/CIM).
+- [ ] **11.5** Trigger **app state**: Outlook/Excel aberto ou janela com título matching (UIA leve, sem pixel automation).
+- [ ] **11.6** API `POST /triggers` + `GET /triggers`; desativar trigger não remove histórico de auditoria.
+- [ ] **11.7** UI: lista de triggers, próxima execução, último resultado.
+- [ ] **11.8** Testes: job agendado dispara goal; trigger filesystem enfileira run mock.
+
+**Critério de aceite:** trigger “toda segunda 08:00” executa goal sem CLI manual; falha de trigger gera evento auditável.
+
+---
+
+#### Fase 12 — Modos de canal, identidade auditável e operação
+
+- [ ] **12.1** Modos formais na API/UI: `chat_only` (sem tools), `assisted` (tools low-risk + approval medium+), `full_agent` (atual).
+- [ ] **12.2** `mode` no `POST /run` e persistido na sessão; evento `runtime_mode_changed`.
+- [ ] **12.3** Assinatura opcional do audit trail: par Ed25519 em `~/.agente/identity.pem`; chave privada protegida com **DPAPI**.
+- [ ] **12.4** Cada linha JSONL inclui `signature` quando `AGENTE_AUDIT_SIGN=1`.
+- [ ] **12.5** `scripts/verify_audit.ps1` — validar cadeia de assinaturas de um ficheiro diário.
+- [ ] **12.6** **Persona** utilizador: `~/.agente/persona.yaml` (nome, idioma, formalidade) injetado no system prompt `core` tier.
+- [ ] **12.7** UI para editar persona com preview; rollback via config backups (Fase 6.6).
+- [ ] **12.8** `scripts/doctor.ps1` alinhado a `GET /diagnostics/doctor`: Office COM, UIA, providers, permissões, policy preset, audit path.
+- [ ] **12.9** *(opcional / longo prazo)* Canal Discord: bot webhook para notificações e comandos limitados (`safe-chat`).
+- [ ] **12.10** *(opcional / longo prazo)* Voice wake word (Porcupine + WASAPI) como serviço separado — fora do core desktop.
+
+**Critério de aceite:** `chat_only` nunca invoca tools; audit assinado verifica com script; doctor reporta bloqueios antes do primeiro run.
+
+---
+
+#### Fase 13 — Proveniência e isolamento avançado (longo prazo)
+
+Itens que complementam sandbox já existente; prioridade após Fases 6–12.
+
+- [ ] **13.1** **Proveniência de scripts:** metadados `generated_by`, `reason`, `parent_request_id` em artefactos do sandbox.
+- [ ] **13.2** Cadeia de proveniência no audit JSONL (ligação script → tool call → approval).
+- [ ] **13.3** **Outbound network gate** opcional: proxy local ou regras WFP documentadas para modo enterprise.
+- [ ] **13.4** **Shell estrito enterprise:** integração documentada com AppLocker / Constrained Language Mode.
+- [ ] **13.5** **Windows Sandbox / job object** para runs de alto risco (opt-in, não substituir sandbox Python atual).
+- [ ] **13.6** Testes de integração: proveniência completa num run multi-script.
+
+**Critério de aceite:** qualquer `.py` gerado no sandbox é rastreável até ao `request_id` e aprovação que o permitiu.
+
+---
+
+#### Ordem de implementação recomendada
+
+```text
+Otimização LLM (já parcialmente em produção):
+  Fase 4 (prompt/histórico) → Fase 5 (benchmarks + UI)
+
+Segurança e operação Windows (Missy-inspired):
+  Fase 6 (audit + config) → Fase 7 (policy gateway)
+  → Fase 8 (playbook) → Fase 9 (circuit breaker + recover)
+  → Fase 10 (prompt guard) → Fase 11 (triggers)
+  → Fase 12 (modos + assinatura + doctor)
+  → Fase 13 (proveniência + isolamento enterprise)
+```
+
+Fases 0–3 (medição, intent routing, payload planner / disclosure, schema optimizer) estão em **Technologies implemented**.
+
+**Paralelização possível:** Fase 10 com Fase 4 (ambas tocam prompt); Fase 8 após Fase 6 (eventos de promoção auditáveis).
+
+#### Anti-padrões (não fazer)
+
+- Atalhos só para Groq/free tier no meio do `llm_payload_planner` / seleção de tools.
+- Remover tools do catálogo canônico para “economizar”.
+- `text_only` sem tools em tarefa que exige execução (perda de capacidade).
+- Listas gigantes de palavras por idioma em vez de profiles + overlap + golden tests.
+
+---
+
 ### Next evolutions
 
 #### Sandbox hardening (remaining)
 
-Automatic dependency detection, approval-gated install, capability isolation and per-run filesystem scopes are implemented. What's still missing:
+Automatic dependency detection, approval-gated install, capability isolation and per-run filesystem scopes are implemented. What's still missing — **ver Fases 6, 7 e 13** no roadmap acima:
 
-- [ ] Command policies (whitelist/blacklist of commands and modules)
-- [ ] Provenance (track origin of each script: who generated it, why, when)
-- [ ] Audit trails (complete log of inputs and outputs)
+- [ ] Command policies (whitelist/blacklist of commands and modules) → **Fase 7.5**, **Fase 13.4**
+- [ ] Provenance (track origin of each script: who generated it, why, when) → **Fase 13.1–13.2**
+- [ ] Audit trails (complete log of inputs and outputs) → **Fase 6.1–6.3**, **Fase 12.3–12.5**
 
 #### Workspace development automation (remaining)
 
@@ -520,30 +771,12 @@ For long-running automation, the user needs to understand and control what is ha
 
 #### Long-running automation robustness (remaining)
 
-Heartbeat, progress tracker and process watchdog are implemented. What's still missing:
+Heartbeat, progress tracker and process watchdog are implemented. What's still missing — **ver Fases 9 e 13**:
 
-- [ ] Checkpoint per task graph branch, including large intermediate results
-- [ ] Idempotent resume: avoid repeating mutations already applied after crash
+- [ ] Checkpoint per task graph branch, including large intermediate results → **Fase 9.5**
+- [ ] Idempotent resume: avoid repeating mutations already applied after crash → **Fase 9.8**
 - [ ] Rollback plan per mutating task when artifacts or known prior state exist
-- [ ] Per-run quotas: CPU, memory, files touched, open processes and downloads limits
-
-#### Intelligent retry with validation error re-injection
-
-When a tool call fails due to validation (e.g.: missing `content` field), the system wastes an entire step for the LLM to see the error and try again. A middleware that intercepts and re-injects automatically would be more efficient:
-
-- [ ] Pre-execution middleware that validates arguments before spending the step
-- [ ] Automatic error re-injection with context ("content field is required, re-generate including the content")
-- [ ] Re-injection limit per step (avoid infinite loops)
-- [ ] Re-injection rate metrics per tool (identify tools with confusing schemas for the LLM)
-
-#### Model routing by complexity
-
-The same model (claude-sonnet-4-6) is used for "hello" and for "install network drivers". An intelligent router would save cost and latency by directing simple tasks to fast models:
-
-- [ ] Complexity classifier (trivial, simple, complex, multi-step)
-- [ ] Model pool: fast/cheap (haiku/gpt-4o-mini) for trivial, full for complex
-- [ ] Automatic fallback: if fast model fails, escalate to full model
-- [ ] Cost metrics per run with breakdown by model used
+- [ ] Per-run quotas: CPU, memory, files touched, open processes and downloads limits → **Fase 7** (policy) + quotas futuras
 
 #### Streaming and real-time feedback
 
@@ -614,11 +847,11 @@ Some tasks require spawning a dynamic number of parallel sub-tasks based on runt
 
 #### Structured long-term memory taxonomy
 
-The World Model and Strategy Memory store entities and strategies. A richer taxonomy would enable more sophisticated reasoning across sessions and users.
+The World Model and Strategy Memory store entities and strategies. A richer taxonomy would enable more sophisticated reasoning across sessions and users. **Playbook / procedural patterns** → **Fase 8**.
 
 - [ ] Semantic memory: stable facts about entities, preferences, and environment (persisted indefinitely)
 - [ ] Episodic memory: time-stamped events and interactions with decay and summarization
-- [ ] Procedural memory: learned skills, behaviors, and tool-calling patterns extracted from successful runs
+- [ ] Procedural memory: learned skills, behaviors, and tool-calling patterns extracted from successful runs → **Fase 8.1–8.4**
 - [ ] Namespace-based store: organize memories by (user, session, domain) with independent TTL per namespace
 - [ ] Background memory extraction: asynchronous extraction of memories from completed runs without blocking the next turn
 - [ ] Memory conflict resolution: detect and merge contradictory facts across sessions with confidence-weighted resolution

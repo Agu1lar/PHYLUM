@@ -1,0 +1,12 @@
+{
+  "id": "in-008-greeting-no-match",
+  "profile_id": null,
+  "title": "Greeting must not match a profile",
+  "tags": ["smoke", "intent", "negative"],
+  "user_text": "ola",
+  "expect": {
+    "accepted": false,
+    "profile_id": null,
+    "routing_mode": "agentic"
+  }
+}

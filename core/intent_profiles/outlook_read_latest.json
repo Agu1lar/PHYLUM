@@ -1,0 +1,28 @@
+{
+  "id": "outlook_read_latest",
+  "domain": "office",
+  "schema_variant": "outlook_read",
+  "description": "Read the most recent Outlook inbox messages.",
+  "version": "1",
+  "required_tools": ["office"],
+  "default_action": {
+    "tool": "office",
+    "action": "outlook_read_latest",
+    "params": {
+      "limit": 10,
+      "folder": "inbox",
+      "unread_only": false
+    }
+  },
+  "param_defaults": {
+    "limit": 10,
+    "folder": "inbox",
+    "unread_only": false
+  },
+  "confidence_threshold": 0.68,
+  "signals": {
+    "require_any": ["outlook", "email", "emails"],
+    "prefer_any": ["ultim", "recent", "latest", "listar", "ler", "read", "mostrar", "retornar"],
+    "exclude_any": ["arquivo", "file", "salvar", "save", "coloque", "write", "export", "nao lid", "unread"]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "id": "in-002-outlook-latest-pt",
+  "profile_id": "outlook_read_latest",
+  "title": "Outlook latest inbox (PT)",
+  "tags": ["smoke", "intent", "office"],
+  "user_text": "listar os ultimos emails do outlook",
+  "expect": {
+    "accepted": true,
+    "profile_id": "outlook_read_latest",
+    "routing_mode": "fast_path",
+    "min_confidence": 0.68,
+    "resolved_tool": "office",
+    "resolved_action": "outlook_read_latest",
+    "forbidden_shell_commands": ["Get-Mailbox", "Get-ExMailbox"]
+  }
+}

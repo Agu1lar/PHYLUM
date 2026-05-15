@@ -46,6 +46,20 @@ PROVIDERS: Dict[str, ProviderDefinition] = {
         default_model="openai/gpt-4o-mini",
         base_url="https://openrouter.ai/api/v1",
     ),
+    "groq": ProviderDefinition(
+        provider="groq",
+        display_name="Groq",
+        models=[
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "openai/gpt-oss-20b",
+            "openai/gpt-oss-120b",
+            "mixtral-8x7b-32768",
+            "gemma2-9b-it",
+        ],
+        default_model="llama-3.3-70b-versatile",
+        base_url="https://api.groq.com/openai/v1",
+    ),
     "openai_compatible": ProviderDefinition(
         provider="openai_compatible",
         display_name="OpenAI Compatible",

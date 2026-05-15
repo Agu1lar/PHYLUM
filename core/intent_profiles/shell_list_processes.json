@@ -1,0 +1,25 @@
+{
+  "id": "shell_list_processes",
+  "domain": "shell",
+  "schema_variant": "run",
+  "description": "List running processes via PowerShell.",
+  "version": "1",
+  "required_tools": ["shell"],
+  "default_action": {
+    "tool": "shell",
+    "action": "run",
+    "params": {
+      "shell": "powershell",
+      "command": "Get-Process | Sort-Object CPU -Descending | Select-Object -First 15 Name,Id,CPU | ConvertTo-Json"
+    }
+  },
+  "param_defaults": {
+    "shell": "powershell",
+    "timeout": 30
+  },
+  "confidence_threshold": 0.64,
+  "signals": {
+    "require_any": ["process", "processos"],
+    "prefer_any": ["listar", "list", "running", "executando"]
+  }
+}

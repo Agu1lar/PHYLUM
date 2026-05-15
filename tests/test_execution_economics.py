@@ -125,6 +125,85 @@ class TestCostTracker:
         assert t.total_tokens == 3000
         assert t.total_steps == 0  # LLM usage doesn't count as tool steps
 
+    def test_measure_llm_payload(self):
+        from execution_economics import measure_llm_payload
+
+        tools = [{"type": "function", "function": {"name": "office", "parameters": {}}}]
+        messages = [{"role": "system", "content": "You are helpful."}]
+        payload = measure_llm_payload(tools=tools, messages=messages)
+        assert payload["tools_count"] == 1
+        assert payload["tools_json_chars"] > 10
+        assert payload["system_prompt_chars"] == len("You are helpful.")
+
+    def test_complete_agent_step_metrics_offered_vs_called(self):
+        t = CostTracker("run-1", model="gpt-4o", provider="openai")
+        tools = [
+            {"type": "function", "function": {"name": "office"}},
+            {"type": "function", "function": {"name": "shell"}},
+        ]
+        t.record_llm_turn(
+            step=1,
+            provider="openai",
+            model="gpt-4o",
+            tools=tools,
+            prompt_tokens=1000,
+            completion_tokens=50,
+        )
+        completed = t.complete_agent_step_metrics(
+            1,
+            tool_calls=[type("TC", (), {"name": "office"})()],
+        )
+        assert completed is not None
+        assert completed.tools_offered == 2
+        assert completed.tools_called == 1
+        assert completed.tools_offered_names == ["office", "shell"]
+        assert completed.tools_called_names == ["office"]
+        step_dict = t.agent_step_metrics_dict(1)
+        assert step_dict["tools_utilization_pct"] == 50.0
+
+    def test_record_llm_turn_payload_summary(self):
+        from execution_economics import measure_llm_payload
+
+        t = CostTracker("run-1", model="gpt-4o", provider="anthropic")
+        tools = [{"type": "function", "function": {"name": "shell"}}]
+        messages = [{"role": "system", "content": "x" * 100}]
+        turn = t.record_llm_turn(
+            step=1,
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            messages=messages,
+            tools=tools,
+            prompt_tokens=5000,
+            completion_tokens=200,
+        )
+        assert turn.tools_count == 1
+        summary = t.summary()
+        assert summary.provider == "anthropic"
+        assert summary.model == "claude-sonnet-4-6"
+        assert summary.prompt_tokens == 5000
+        assert summary.completion_tokens == 200
+        assert summary.tools_json_chars == measure_llm_payload(tools=tools)["tools_json_chars"]
+        assert summary.system_prompt_chars == 100
+        assert summary.llm_turns == 1
+        payload = t.payload_summary_dict()
+        assert payload["tools_count"] == 1
+        assert "total_cost_usd" in payload
+        d = t.to_dict()
+        assert len(d["llm_turn_metrics"]) == 1
+
+    def test_by_model_breakdown(self):
+        t = CostTracker("run-1", model="gpt-4o-mini")
+        t.record_llm_usage(prompt_tokens=1000, completion_tokens=500, model="gpt-4o-mini")
+        t.record_llm_usage(prompt_tokens=2000, completion_tokens=1000, model="gpt-4.1")
+        summary = t.summary()
+        assert len(summary.by_model) == 2
+        models = {entry.model for entry in summary.by_model}
+        assert models == {"gpt-4o-mini", "gpt-4.1"}
+        d = summary.to_dict()
+        assert len(d["by_model"]) == 2
+        total_share = sum(row["share_of_cost_pct"] for row in d["by_model"])
+        assert abs(total_share - 100.0) < 0.01
+
     def test_estimate_cost_known_model(self):
         t = CostTracker("run-1", model="gpt-4o")
         usage = TokenUsage(prompt_tokens=1_000_000, completion_tokens=1_000_000)

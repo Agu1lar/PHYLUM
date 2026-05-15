@@ -1,0 +1,22 @@
+{
+  "id": "driver_install_printer",
+  "domain": "driver",
+  "schema_variant": "driver_search",
+  "tool_variants": {
+    "shell": "run"
+  },
+  "description": "Install or configure a printer driver.",
+  "version": "1",
+  "required_tools": ["driver_manager", "shell"],
+  "default_action": {
+    "tool": "driver_manager",
+    "action": "find_driver_candidates",
+    "params": {}
+  },
+  "param_defaults": {},
+  "confidence_threshold": 0.64,
+  "signals": {
+    "require_any": ["driver", "impressora", "printer"],
+    "prefer_any": ["instal", "install", "configur"]
+  }
+}

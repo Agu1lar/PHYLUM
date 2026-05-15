@@ -71,8 +71,21 @@ const ChatHistoryPanel: React.FC<Props> = ({ runs, currentRunId, onSelectRun, on
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="truncate text-sm font-medium text-gray-100">{formatLabel(run)}</div>
-                      <div className="mt-1 text-xs text-gray-400">
-                        {run.status} • {formatTimestamp(run.last_updated ?? run.created_at)}
+                      <div className="mt-1 flex items-center gap-2 text-xs text-gray-400">
+                        <span
+                          className={`rounded-full px-2 py-0.5 ${
+                            ['running', 'planning', 'recovering', 'resuming'].includes(run.status)
+                              ? 'bg-blue-900/50 text-blue-200'
+                              : run.status === 'completed'
+                                ? 'bg-emerald-900/40 text-emerald-200'
+                                : run.status === 'failed'
+                                  ? 'bg-red-900/40 text-red-200'
+                                  : 'bg-gray-800 text-gray-400'
+                          }`}
+                        >
+                          {run.status}
+                        </span>
+                        <span>{formatTimestamp(run.last_updated ?? run.created_at)}</span>
                       </div>
                     </div>
                     <button

@@ -1,0 +1,15 @@
+{
+  "id": "in-005-filesystem-write-downloads-pt",
+  "profile_id": "filesystem_write_downloads",
+  "title": "Write file to Downloads (PT)",
+  "tags": ["intent", "filesystem"],
+  "user_text": "escrever um arquivo de texto na pasta downloads",
+  "expect": {
+    "accepted": true,
+    "profile_id": "filesystem_write_downloads",
+    "routing_mode": "fast_path",
+    "min_confidence": 0.62,
+    "resolved_tool": "filesystem",
+    "resolved_action": "write"
+  }
+}

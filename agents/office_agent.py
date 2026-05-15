@@ -161,7 +161,13 @@ class OfficeAgent:
 
         return await asyncio.to_thread(_run)
 
-    async def outlook_read_latest(self, limit: int = 10, folder: str = "inbox") -> Dict[str, Any]:
+    async def outlook_read_latest(
+        self,
+        limit: int = 10,
+        folder: str = "inbox",
+        *,
+        unread_only: bool = False,
+    ) -> Dict[str, Any]:
         """Read the N most recent emails from Outlook. Works in background without Outlook being visible."""
         def _run() -> Dict[str, Any]:
             app = self._dispatch("Outlook.Application")
@@ -176,6 +182,8 @@ class OfficeAgent:
                 if count >= limit:
                     break
                 try:
+                    if unread_only and not bool(getattr(item, "UnRead", False)):
+                        continue
                     attachments = []
                     try:
                         for idx in range(1, item.Attachments.Count + 1):
@@ -189,13 +197,19 @@ class OfficeAgent:
                         "sender_email": getattr(item, "SenderEmailAddress", ""),
                         "to": getattr(item, "To", ""),
                         "received_time": str(getattr(item, "ReceivedTime", "")),
+                        "unread": bool(getattr(item, "UnRead", False)),
                         "body": body_text[:3000],
                         "attachments": attachments,
                     })
                     count += 1
                 except Exception:
                     continue
-            return {"folder": folder, "count": len(messages), "messages": messages}
+            return {
+                "folder": folder,
+                "unread_only": unread_only,
+                "count": len(messages),
+                "messages": messages,
+            }
 
         return await asyncio.to_thread(_run)
 

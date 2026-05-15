@@ -1,0 +1,15 @@
+{
+  "id": "in-004-filesystem-list-downloads-pt",
+  "profile_id": "filesystem_list_downloads",
+  "title": "List Downloads folder (PT)",
+  "tags": ["smoke", "intent", "filesystem"],
+  "user_text": "listar arquivos na pasta downloads",
+  "expect": {
+    "accepted": true,
+    "profile_id": "filesystem_list_downloads",
+    "routing_mode": "fast_path",
+    "min_confidence": 0.65,
+    "resolved_tool": "filesystem",
+    "resolved_action": "list"
+  }
+}

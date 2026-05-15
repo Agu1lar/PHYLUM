@@ -1,0 +1,21 @@
+{
+  "id": "filesystem_write_downloads",
+  "domain": "filesystem",
+  "schema_variant": "write",
+  "description": "Write text content to a file under Downloads.",
+  "version": "1",
+  "required_tools": ["filesystem"],
+  "default_action": {
+    "tool": "filesystem",
+    "action": "write",
+    "params": {}
+  },
+  "param_defaults": {
+    "path": "~/Downloads/output.txt"
+  },
+  "confidence_threshold": 0.62,
+  "signals": {
+    "require_any": ["download", "downloads", "escrever", "write", "salvar", "save", "arquivo", "file"],
+    "exclude_any": ["outlook", "email"]
+  }
+}

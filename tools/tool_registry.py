@@ -99,6 +99,18 @@ class ToolRegistry:
             payload["request_id"] = run_id
         return payload
 
+    async def prevalidate(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        *,
+        task_id: str = "",
+    ):
+        """Validate arguments before execution (used by agentic loop middleware)."""
+        from tool_validation_middleware import prevalidate_tool_call
+
+        return await prevalidate_tool_call(self, tool_name, arguments, task_id=task_id)
+
     async def execute(self, task: Dict[str, Any], *, cancel_event=None, request_id: Optional[str] = None) -> Dict[str, Any]:
         tool_name = task["tool"]
         tool = self.tools[tool_name]

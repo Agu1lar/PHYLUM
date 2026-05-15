@@ -1,0 +1,15 @@
+{
+  "id": "in-006-driver-install-pt",
+  "profile_id": "driver_install_printer",
+  "title": "Printer driver install (PT)",
+  "tags": ["intent", "driver"],
+  "user_text": "instalar driver da impressora hp",
+  "expect": {
+    "accepted": true,
+    "profile_id": "driver_install_printer",
+    "routing_mode": "fast_path",
+    "min_confidence": 0.64,
+    "resolved_tool": "driver_manager",
+    "resolved_action": "find_driver_candidates"
+  }
+}

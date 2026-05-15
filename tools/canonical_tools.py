@@ -216,7 +216,7 @@ ACTION_METADATA: Dict[str, Dict[str, Any]] = {
         "word_find_text": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["path", "query"], "effect_kind": "word_find_text"},
         "excel_read_range": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["path", "sheet_name", "range_address"], "effect_kind": "excel_read_range"},
         "outlook_search_messages": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["query"], "effect_kind": "outlook_search_messages"},
-        "outlook_read_latest": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["limit", "folder"], "effect_kind": "outlook_read_latest"},
+        "outlook_read_latest": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["limit", "folder", "unread_only"], "effect_kind": "outlook_read_latest"},
         "word_create_document": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["output_path", "content"], "effect_kind": "word_create_document", "reversibility": "delete_file"},
         "draft_email_with_attachment": {"semantic_type": "mutation", "mutates_state": True, "approval_mode": "single", "target_fields": ["to", "attachment_path"], "effect_kind": "draft_email_with_attachment", "reversibility": "discard_draft"},
         "reveal_active_document_path": {"semantic_type": "inspection", "mutates_state": False, "approval_mode": "none", "target_fields": ["app_name"], "effect_kind": "reveal_active_document_path"},
@@ -777,7 +777,7 @@ def tool_definitions() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "office",
-                "description": "Use Office COM automation for Word, Excel and Outlook workflows. All actions run headlessly in the background — no need for the user to have any Office app open. Use outlook_read_latest to read recent emails, word_create_document to create Word docs, outlook_search_messages to search emails by keyword.",
+                "description": "Use Office COM automation for Word, Excel and Outlook workflows. All actions run headlessly in the background — no need for the user to have any Office app open. Use outlook_read_latest to read recent or unread emails (set unread_only=true), word_create_document to create Word docs, outlook_search_messages to search emails by keyword. Do not use Exchange PowerShell cmdlets for mailbox reads.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -811,6 +811,7 @@ def tool_definitions() -> List[Dict[str, Any]]:
                         "range_address": {"type": "string"},
                         "limit": {"type": "integer", "minimum": 1, "maximum": 200},
                         "folder": {"type": "string", "enum": ["inbox", "sent", "drafts", "outbox"], "description": "Outlook folder for outlook_read_latest"},
+                        "unread_only": {"type": "boolean", "description": "When true, only return unread messages (outlook_read_latest)"},
                     },
                     "required": ["action"],
                     "additionalProperties": False,
@@ -1521,7 +1522,7 @@ def normalize_agentic_task(tool_name: str, arguments: Dict[str, Any], task_id: s
         params = {
             key: value
             for key, value in arguments.items()
-            if key in {"path", "output_path", "app_name", "to", "subject", "body", "content", "title", "attachment_path", "query", "sheet_name", "range_address", "limit", "folder"}
+            if key in {"path", "output_path", "app_name", "to", "subject", "body", "content", "title", "attachment_path", "query", "sheet_name", "range_address", "limit", "folder", "unread_only"}
             and value is not None
         }
     elif tool_name == "sandbox":

@@ -101,9 +101,21 @@ export default function App() {
   }, [API_BASE, configVersion])
 
   const statusPill = useMemo(() => {
-    if (!connected) return 'Desconectado'
-    if (!currentRun?.status) return 'Pronto'
-    return currentRun.status
+    if (!connected) return { label: 'Desconectado', active: false }
+    if (!currentRun?.status) return { label: 'Pronto', active: false }
+    const active = !['completed', 'failed', 'cancelled'].includes(currentRun.status)
+    const labels: Record<string, string> = {
+      planning: 'Planejando',
+      running: 'Executando',
+      recovering: 'Recuperando',
+      paused: 'Pausado',
+      awaiting_input: 'Aguardando resposta',
+      awaiting_approval: 'Aguardando aprovacao',
+      completed: 'Concluido',
+      failed: 'Falhou',
+      cancelled: 'Cancelado',
+    }
+    return { label: labels[currentRun.status] ?? currentRun.status, active }
   }, [connected, currentRun?.status])
 
   function openDashboard() {
@@ -151,7 +163,21 @@ export default function App() {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300">{statusPill}</span>
+              <span
+                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs ${
+                  statusPill.active
+                    ? 'border-blue-500/40 bg-blue-950/40 text-blue-100'
+                    : 'border-gray-700 bg-gray-800 text-gray-300'
+                }`}
+              >
+                {statusPill.active ? (
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-70" />
+                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-blue-400" />
+                  </span>
+                ) : null}
+                {statusPill.label}
+              </span>
               {activeView === 'dashboard' ? (
                 <button
                   onClick={() => setShowAdvanced(!showAdvanced)}

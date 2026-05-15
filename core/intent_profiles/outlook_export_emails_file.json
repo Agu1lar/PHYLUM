@@ -1,0 +1,30 @@
+{
+  "id": "outlook_export_emails_file",
+  "domain": "office",
+  "schema_variant": "outlook_read",
+  "tool_variants": {
+    "filesystem": "write"
+  },
+  "description": "Read Outlook emails and write them to a file (typically Downloads).",
+  "version": "1",
+  "required_tools": ["office", "filesystem"],
+  "default_action": {
+    "tool": "office",
+    "action": "outlook_read_latest",
+    "params": {
+      "limit": 3,
+      "folder": "inbox",
+      "unread_only": false
+    }
+  },
+  "param_defaults": {
+    "limit": 3,
+    "folder": "inbox",
+    "output_folder": "downloads"
+  },
+  "confidence_threshold": 0.7,
+  "signals": {
+    "require_any": ["outlook", "email", "emails"],
+    "also_require_any": ["arquivo", "file", "pasta", "download", "salvar", "save", "coloque", "write"]
+  }
+}

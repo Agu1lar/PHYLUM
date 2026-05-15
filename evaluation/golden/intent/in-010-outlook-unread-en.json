@@ -1,0 +1,17 @@
+{
+  "id": "in-010-outlook-unread-en",
+  "profile_id": "outlook_read_unread",
+  "title": "Outlook unread (EN)",
+  "tags": ["intent", "office"],
+  "user_text": "show my latest unread outlook emails",
+  "expect": {
+    "accepted": true,
+    "profile_id": "outlook_read_unread",
+    "routing_mode": "fast_path",
+    "min_confidence": 0.68,
+    "resolved_tool": "office",
+    "resolved_action": "outlook_read_latest",
+    "resolved_params_contains": { "unread_only": true },
+    "forbidden_shell_commands": ["Get-Mailbox", "Get-ExMailbox"]
+  }
+}

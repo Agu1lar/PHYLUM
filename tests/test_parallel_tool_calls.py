@@ -141,8 +141,8 @@ class TestParallelExecution:
             AgentTurnResult(
                 content="Reading two things at once.",
                 tool_calls=[
-                    NormalizedToolCall(id="tc1", name="memory", arguments={"action": "world_find_app", "key": "word"}),
-                    NormalizedToolCall(id="tc2", name="memory", arguments={"action": "world_find_share", "key": "docs"}),
+                    NormalizedToolCall(id="tc1", name="memory", arguments={"action": "world_find_app", "query": "word"}),
+                    NormalizedToolCall(id="tc2", name="memory", arguments={"action": "world_find_share", "query": "docs"}),
                 ],
             ),
             AgentTurnResult(content="Got both results.", tool_calls=[]),
@@ -174,9 +174,9 @@ class TestParallelExecution:
             AgentTurnResult(
                 content="",
                 tool_calls=[
-                    NormalizedToolCall(id="tc1", name="memory", arguments={"action": "world_find_app", "key": "a"}),
-                    NormalizedToolCall(id="tc2", name="memory", arguments={"action": "world_find_share", "key": "b"}),
-                    NormalizedToolCall(id="tc3", name="memory", arguments={"action": "world_find_path", "key": "c"}),
+                    NormalizedToolCall(id="tc1", name="memory", arguments={"action": "world_find_app", "query": "a"}),
+                    NormalizedToolCall(id="tc2", name="memory", arguments={"action": "world_find_share", "query": "b"}),
+                    NormalizedToolCall(id="tc3", name="memory", arguments={"action": "world_find_path", "query": "c"}),
                 ],
             ),
             AgentTurnResult(content="Done.", tool_calls=[]),
@@ -206,7 +206,7 @@ class TestParallelExecution:
             AgentTurnResult(
                 content="",
                 tool_calls=[
-                    NormalizedToolCall(id="tc1", name="memory", arguments={"action": "world_find_app", "key": "a"}),
+                    NormalizedToolCall(id="tc1", name="memory", arguments={"action": "world_find_app", "query": "a"}),
                     NormalizedToolCall(id="tc2", name="sandbox", arguments={"action": "execute_python", "code": "print(1)"}),
                 ],
             ),
@@ -237,7 +237,7 @@ class TestParallelExecution:
             AgentTurnResult(
                 content="One call.",
                 tool_calls=[
-                    NormalizedToolCall(id="tc1", name="memory", arguments={"action": "world_find_app", "key": "word"}),
+                    NormalizedToolCall(id="tc1", name="memory", arguments={"action": "world_find_app", "query": "word"}),
                 ],
             ),
             AgentTurnResult(content="Found it.", tool_calls=[]),
@@ -264,8 +264,8 @@ class TestParallelExecution:
             AgentTurnResult(
                 content="",
                 tool_calls=[
-                    NormalizedToolCall(id="tc-alpha", name="memory", arguments={"action": "world_find_app", "key": "a"}),
-                    NormalizedToolCall(id="tc-beta", name="memory", arguments={"action": "world_find_share", "key": "b"}),
+                    NormalizedToolCall(id="tc-alpha", name="memory", arguments={"action": "world_find_app", "query": "a"}),
+                    NormalizedToolCall(id="tc-beta", name="memory", arguments={"action": "world_find_share", "query": "b"}),
                 ],
             ),
             AgentTurnResult(content="Done.", tool_calls=[]),
@@ -302,7 +302,7 @@ class TestParallelExecution:
                         "prompt": "Which printer?",
                         "title": "Printer selection",
                     }),
-                    NormalizedToolCall(id="tc-read", name="memory", arguments={"action": "world_find_app", "key": "x"}),
+                    NormalizedToolCall(id="tc-read", name="memory", arguments={"action": "world_find_app", "query": "x"}),
                 ],
             ),
         ])
@@ -337,8 +337,8 @@ class TestParallelEvents:
             AgentTurnResult(
                 content="",
                 tool_calls=[
-                    NormalizedToolCall(id="tc1", name="memory", arguments={"action": "world_find_app", "key": "a"}),
-                    NormalizedToolCall(id="tc2", name="memory", arguments={"action": "world_find_share", "key": "b"}),
+                    NormalizedToolCall(id="tc1", name="memory", arguments={"action": "world_find_app", "query": "a"}),
+                    NormalizedToolCall(id="tc2", name="memory", arguments={"action": "world_find_share", "query": "b"}),
                 ],
             ),
             AgentTurnResult(content="Done.", tool_calls=[]),

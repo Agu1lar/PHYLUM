@@ -72,6 +72,18 @@ class EventType(str, Enum):
     AGENT_THINKING = "agent_thinking"
     TOOL_CALL_PROPOSED = "tool_call_proposed"
     AGENTIC_FALLBACK = "agentic_fallback"
+    LLM_TURN_METRICS = "llm_turn_metrics"
+    AGENT_STEP_METRICS = "agent_step_metrics"
+    TASK_BUDGET_PROFILE = "task_budget_profile"
+    TASK_BUDGET_WARNING = "task_budget_warning"
+    INTENT_CLASSIFIED = "intent_classified"
+    INTENT_ROUTING = "intent_routing"
+    INTENT_FAST_PATH_STARTED = "intent_fast_path_started"
+    INTENT_FAST_PATH_COMPLETED = "intent_fast_path_completed"
+    INTENT_FAST_PATH_FAILED = "intent_fast_path_failed"
+    INTENT_PROFILE_LEARNED = "intent_profile_learned"
+    TOOL_DISCLOSURE_EXPANDED = "tool_disclosure_expanded"
+    RUN_COST_SUMMARY = "run_cost_summary"
 
     # --- Dependency management ---
     DEPENDENCY_INSTALL_REQUESTED = "dependency_install_requested"

@@ -1,0 +1,16 @@
+{
+  "id": "in-003-outlook-export-file-pt",
+  "profile_id": "outlook_export_emails_file",
+  "title": "Outlook emails to file in Downloads (PT)",
+  "tags": ["intent", "office", "filesystem"],
+  "user_text": "pegue 3 emails do outlook e salve num arquivo na pasta downloads",
+  "expect": {
+    "accepted": true,
+    "profile_id": "outlook_export_emails_file",
+    "routing_mode": "fast_path",
+    "min_confidence": 0.70,
+    "resolved_tool": "office",
+    "resolved_action": "outlook_read_latest",
+    "forbidden_shell_commands": ["Get-Mailbox", "Get-ExMailbox"]
+  }
+}

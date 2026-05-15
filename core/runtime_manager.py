@@ -21,6 +21,7 @@ from credential_store import CredentialStore
 from desktop_windows_agent import DesktopWindowsAgent
 from event_bus import EventBus, EventType, get_event_bus
 from semantic_verifier import SemanticVerifier
+from model_router import route_model_for_request
 from multi_provider_client import MultiProviderClient
 from nodes_reflection import ReflectionNode
 from nodes_safety import SafetyNode
@@ -1138,7 +1139,54 @@ class RuntimeManager:
         if not provider:
             await self._run_manual_assist_pipeline(state, reason="no provider configured for API-first mode")
             return
-        provider_config = await self.credential_store.resolve_runtime_config(provider, model=state.get("model"))
+        user_text = (
+            state.get("inputs", {}).get("text")
+            or state.get("inputs", {}).get("prompt")
+            or ""
+        )
+        available_models: Optional[List[str]] = None
+        try:
+            from provider_registry import get_provider
+
+            definition = get_provider(provider)
+            available_models = list(definition.models)
+            routing = route_model_for_request(
+                provider,
+                user_text=str(user_text),
+                requested_model=state.get("model"),
+                available_models=available_models,
+            )
+        except Exception:
+            logger.debug("Model routing skipped", exc_info=True)
+            routing = None
+
+        resolved_model = routing.selected_model if routing else state.get("model")
+        provider_config = await self.credential_store.resolve_runtime_config(
+            provider, model=resolved_model,
+        )
+        if available_models:
+            provider_config["available_models"] = available_models
+        if routing:
+            routing_dict = routing.to_dict()
+            state["model_routing"] = routing_dict
+            provider_config["model_routing"] = routing_dict
+            state["model"] = provider_config["model"]
+            await self._emit(
+                "model_routed",
+                {
+                    "request_id": state["request_id"],
+                    "routing": routing.to_dict(),
+                    "selected_model": provider_config["model"],
+                },
+                state=state,
+            )
+            logger.info(
+                "Model routing: %s -> %s (%s, %s)",
+                routing.requested_model or "(default)",
+                provider_config["model"],
+                routing.complexity.level.value,
+                routing.tier,
+            )
         result = await self.cognitive_layer.agentic_loop.run(
             state=state,
             provider_config=provider_config,
@@ -1153,6 +1201,14 @@ class RuntimeManager:
         if result.get("cost"):
             state["outputs"]["cost"] = result["cost"]
             state["agent_session"]["cost"] = result["cost"]
+            await self._emit(
+                "run_cost_summary",
+                {
+                    "request_id": state["request_id"],
+                    "cost": result["cost"],
+                },
+                state=state,
+            )
         if result["status"] == "awaiting_input":
             await self._pause_for_handoff(state, result["handoff"])
             raise RunPausedError()
@@ -1161,8 +1217,10 @@ class RuntimeManager:
             "model": provider_config["model"],
             "text": result["final_text"],
             "steps": result["steps"],
+            "model_routing": state.get("model_routing"),
         }
-        state["outputs"]["execution_mode"] = "agentic"
+        execution_mode = result.get("execution_mode") or "agentic"
+        state["outputs"]["execution_mode"] = execution_mode
         await self._complete_run(
             state,
             summary=result["final_text"],
@@ -1171,7 +1229,9 @@ class RuntimeManager:
                 "provider": provider_config["provider"],
                 "model": provider_config["model"],
                 "steps": result["steps"],
-                "execution_mode": "agentic",
+                "execution_mode": execution_mode,
+                "intent_profile_id": result.get("intent_profile_id"),
+                "cost": state["outputs"].get("cost"),
             },
             current_node="reflection",
         )
@@ -1444,6 +1504,23 @@ class RuntimeManager:
         if self._cancel_event_for(state["request_id"]).is_set():
             raise asyncio.CancelledError()
 
+    async def _maybe_learn_intent_profile(self, state: Dict[str, Any]) -> None:
+        try:
+            from intent_profile_learner import learn_from_run_state
+
+            promotion = learn_from_run_state(state)
+            if promotion and promotion.get("status") == "promoted":
+                await self._emit(
+                    "intent_profile_learned",
+                    {
+                        "request_id": state["request_id"],
+                        **promotion,
+                    },
+                    state=state,
+                )
+        except Exception:
+            logger.exception("Intent profile learning failed for run %s", state.get("request_id"))
+
     async def _complete_run(
         self,
         state: Dict[str, Any],
@@ -1464,6 +1541,7 @@ class RuntimeManager:
             {"request_id": state["request_id"], "status": state["status"], "reflection": final_reflection},
             state=state,
         )
+        await self._maybe_learn_intent_profile(state)
         await self._finalize_autonomy_metrics(state)
         await self._finalize_goal_for_run(state, completed=True, summary=summary)
 

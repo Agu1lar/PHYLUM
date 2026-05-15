@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "description": "Declarative intent profiles for PHYLUM fast-path routing (Fase 1).",
+  "profiles": [
+    "outlook_read_unread",
+    "outlook_read_latest",
+    "outlook_export_emails_file",
+    "filesystem_write_downloads",
+    "filesystem_list_downloads",
+    "driver_install_printer",
+    "shell_list_processes"
+  ]
+}

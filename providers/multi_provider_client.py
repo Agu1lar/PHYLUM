@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from pydantic import BaseModel, Field
 
+from model_router import is_groq_retryable_request_error
 from provider_registry import get_provider
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,23 @@ logger = logging.getLogger(__name__)
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 529}
 _MAX_LLM_RETRIES = 3
 _BACKOFF_BASE = 2.0
+_GROQ_TIMEOUT_SECONDS = 120.0
+_GROQ_MAX_TOOL_DESCRIPTION_CHARS = 160
+
+
+def _parse_tool_arguments(raw: Any) -> Dict[str, Any]:
+    """Coerce provider tool arguments to a dict (Groq may return null/invalid JSON)."""
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 class LLMApiError(Exception):
@@ -95,7 +113,10 @@ class MultiProviderClient:
                         response_body=exc.response.text[:500] if exc.response else "",
                     ) from exc
                 retry_after = self._parse_retry_after(exc.response)
-                wait = retry_after if retry_after else min(_BACKOFF_BASE ** attempt, 30.0)
+                max_wait = 60.0 if provider_id == "groq" else 30.0
+                wait = retry_after if retry_after else min(_BACKOFF_BASE ** attempt, max_wait)
+                if provider_id == "groq" and wait > max_wait:
+                    wait = max_wait
                 logger.warning(
                     "LLM API %s/%s returned HTTP %d — retrying in %.1fs (attempt %d/%d)",
                     provider_id, model, status, wait, attempt, _MAX_LLM_RETRIES,
@@ -128,7 +149,7 @@ class MultiProviderClient:
         tools: List[Dict[str, Any]],
         base_url: Optional[str] = None,
     ) -> AgentTurnResult:
-        if provider_id in {"openai", "openai_compatible", "openrouter"}:
+        if provider_id in {"openai", "openai_compatible", "openrouter", "groq"}:
             return await self._complete_openai_compatible(
                 provider_id=provider_id,
                 api_key=api_key,
@@ -175,7 +196,7 @@ class MultiProviderClient:
         base_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         provider_id = get_provider(provider).provider
-        if provider_id in {"openai", "openai_compatible", "openrouter"}:
+        if provider_id in {"openai", "openai_compatible", "openrouter", "groq"}:
             url = f"{(base_url or get_provider(provider_id).base_url).rstrip('/')}/models"
             headers = self._openai_compatible_headers(api_key=api_key, provider_id=provider_id)
         elif provider_id == "gemini":
@@ -204,15 +225,94 @@ class MultiProviderClient:
         tools: List[Dict[str, Any]],
         base_url: str,
     ) -> AgentTurnResult:
-        payload = {
+        """Paid/default: full tools first. Groq fallbacks: compact tools, then text-only."""
+        if provider_id != "groq":
+            return await self._post_openai_chat_completion(
+                provider_id=provider_id,
+                api_key=api_key,
+                model=model,
+                messages=messages,
+                tools=tools,
+                base_url=base_url,
+                compact_tools=False,
+                tool_choice="auto" if tools else "none",
+            )
+
+        groq_attempts: List[Dict[str, Any]] = []
+        if tools:
+            groq_attempts.append({"compact": False, "label": "tools"})
+            groq_attempts.append({"compact": True, "label": "compact_tools"})
+        else:
+            groq_attempts.append({"compact": False, "label": "text"})
+
+        last_error: Optional[httpx.HTTPStatusError] = None
+        for index, attempt in enumerate(groq_attempts):
+            has_more = index < len(groq_attempts) - 1
+            try:
+                return await self._post_openai_chat_completion(
+                    provider_id=provider_id,
+                    api_key=api_key,
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    base_url=base_url,
+                    compact_tools=attempt["compact"],
+                    tool_choice="auto" if tools else "none",
+                )
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                body = exc.response.text if exc.response is not None else ""
+                status = exc.response.status_code if exc.response is not None else 0
+                if has_more and is_groq_retryable_request_error(status, body):
+                    logger.warning(
+                        "Groq %s on %s failed (%s) — retrying with %s",
+                        attempt["label"],
+                        model,
+                        body[:160],
+                        groq_attempts[index + 1]["label"],
+                    )
+                    continue
+                raise
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("OpenAI-compatible completion failed without response")
+
+    async def _post_openai_chat_completion(
+        self,
+        *,
+        provider_id: str,
+        api_key: str,
+        model: str,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        base_url: str,
+        compact_tools: bool,
+        tool_choice: str = "auto",
+    ) -> AgentTurnResult:
+        clean_messages = self._sanitize_openai_messages(messages)
+        if compact_tools and provider_id == "groq" and tools:
+            clean_tools = self._compact_tools_for_groq(tools)
+        else:
+            clean_tools = list(tools)
+        payload: Dict[str, Any] = {
             "model": model,
-            "messages": messages,
-            "tools": tools,
-            "tool_choice": "auto",
-            "max_tokens": 2048,
+            "messages": clean_messages,
         }
+        if provider_id == "groq":
+            payload["max_completion_tokens"] = 2048
+        else:
+            payload["max_tokens"] = 2048
+        if clean_tools and tool_choice != "none":
+            payload["tools"] = clean_tools
+            payload["tool_choice"] = tool_choice
+        elif provider_id == "groq":
+            payload["tool_choice"] = "none"
+        if provider_id == "groq" and clean_tools and tool_choice != "none":
+            payload["parallel_tool_calls"] = False
+            payload["disable_tool_validation"] = True
         headers = self._openai_compatible_headers(api_key=api_key, provider_id=provider_id)
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        timeout = max(self.timeout, _GROQ_TIMEOUT_SECONDS) if provider_id == "groq" else self.timeout
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(f"{base_url.rstrip('/')}/chat/completions", json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
@@ -221,7 +321,7 @@ class MultiProviderClient:
             NormalizedToolCall(
                 id=tool_call["id"],
                 name=tool_call["function"]["name"],
-                arguments=json.loads(tool_call["function"]["arguments"] or "{}"),
+                arguments=_parse_tool_arguments(tool_call.get("function", {}).get("arguments")),
             )
             for tool_call in message.get("tool_calls", [])
         ]
@@ -262,7 +362,7 @@ class MultiProviderClient:
                     NormalizedToolCall(
                         id=function_call.get("id") or f"gemini-tool-{index}",
                         name=function_call["name"],
-                        arguments=function_call.get("args") or {},
+                        arguments=_parse_tool_arguments(function_call.get("args")),
                     )
                 )
         usage = self._extract_usage(data)
@@ -420,7 +520,7 @@ class MultiProviderClient:
                         "type": "tool_use",
                         "id": tool_call["id"],
                         "name": tool_call["function"]["name"],
-                        "input": json.loads(tool_call["function"]["arguments"] or "{}"),
+                        "input": _parse_tool_arguments(tool_call.get("function", {}).get("arguments")),
                     }
                 )
             converted.append({"role": role, "content": blocks or [{"type": "text", "text": ""}]})
@@ -500,7 +600,7 @@ class MultiProviderClient:
                     {
                         "functionCall": {
                             "name": tool_call["function"]["name"],
-                            "args": json.loads(tool_call["function"]["arguments"] or "{}"),
+                            "args": _parse_tool_arguments(tool_call.get("function", {}).get("arguments")),
                         }
                     }
                 )
@@ -531,11 +631,51 @@ class MultiProviderClient:
         return {"content": value}
 
     def _openai_compatible_headers(self, *, api_key: str, provider_id: str) -> Dict[str, str]:
-        headers = {"Authorization": f"Bearer {api_key}"}
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
         if provider_id == "openrouter":
             headers["HTTP-Referer"] = "http://127.0.0.1:5173"
             headers["X-Title"] = "PHYLUM"
         return headers
+
+    @staticmethod
+    def _sanitize_openai_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        cleaned: List[Dict[str, Any]] = []
+        for message in messages:
+            item = {key: value for key, value in message.items() if not str(key).startswith("_")}
+            cleaned.append(item)
+        return cleaned
+
+    @classmethod
+    def _compact_tools_for_groq(cls, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Fallback: shrink tool schemas when Groq TPM limits reject the full agentic catalog."""
+        compact: List[Dict[str, Any]] = []
+        for tool in tools:
+            copy = json.loads(json.dumps(tool))
+            function_def = copy.get("function") or {}
+            description = str(function_def.get("description") or "")
+            if len(description) > _GROQ_MAX_TOOL_DESCRIPTION_CHARS:
+                function_def["description"] = description[: _GROQ_MAX_TOOL_DESCRIPTION_CHARS - 3] + "..."
+            parameters = function_def.get("parameters")
+            if isinstance(parameters, dict):
+                cls._trim_json_schema(parameters)
+            copy["function"] = function_def
+            compact.append(copy)
+        return compact
+
+    @classmethod
+    def _trim_json_schema(cls, node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        node.pop("additionalProperties", None)
+        node.pop("default", None)
+        for prop in (node.get("properties") or {}).values():
+            cls._trim_json_schema(prop)
+        items = node.get("items")
+        if isinstance(items, dict):
+            cls._trim_json_schema(items)
 
     def _coerce_content(self, value: Any) -> str:
         if value is None:

@@ -39,9 +39,13 @@ async def test_credential_store_returns_metadata_only(monkeypatch, isolated_pers
     assert resolved["model"] == "gpt-4.1-mini"
 
 
-def test_provider_registry_supports_gemini_and_openrouter():
+def test_provider_registry_supports_gemini_openrouter_and_groq():
     assert get_provider("gemini").display_name == "Google Gemini"
     assert get_provider("openrouter").display_name == "OpenRouter"
+    groq = get_provider("groq")
+    assert groq.display_name == "Groq"
+    assert groq.base_url == "https://api.groq.com/openai/v1"
+    assert groq.default_model == "llama-3.3-70b-versatile"
 
 
 def test_provider_registry_normalizes_anthropic_model_aliases():
