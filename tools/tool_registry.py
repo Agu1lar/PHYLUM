@@ -285,7 +285,11 @@ class ToolRegistry:
         return target
 
     def _infer_issue_kind(self, details: Dict[str, Any]) -> str:
+        if details.get("missing_modules"):
+            return "missing_dependency"
         text = " ".join(str(details.get(key, "")) for key in ("error", "stderr")).lower()
+        if "modulenotfounderror" in text or "no module named" in text:
+            return "missing_dependency"
         if "timeout" in text:
             return "timeout"
         if "approval rejected" in text:

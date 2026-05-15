@@ -73,6 +73,10 @@ class EventType(str, Enum):
     TOOL_CALL_PROPOSED = "tool_call_proposed"
     AGENTIC_FALLBACK = "agentic_fallback"
 
+    # --- Dependency management ---
+    DEPENDENCY_INSTALL_REQUESTED = "dependency_install_requested"
+    DEPENDENCY_INSTALLED = "dependency_installed"
+
     # --- Handoff ---
     USER_INPUT_REQUESTED = "user_input_requested"
     USER_INPUT_RECEIVED = "user_input_received"

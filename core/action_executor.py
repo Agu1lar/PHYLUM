@@ -281,7 +281,15 @@ class ActionExecutor:
                     handoff = self.runtime._handoff_for_recovery(state, task, str(exc))
                     await self.runtime._pause_for_handoff(state, handoff)
                     raise RunPausedError() from exc
-                if task["recovery"]["retryable"]:
+                if task["recovery"].get("classification") == "dependency_install":
+                    install_result = await self._handle_dependency_install(state, task)
+                    if install_result:
+                        task["status"] = "retry_scheduled"
+                        task["_dependency_installed"] = True
+                        await asyncio.sleep(1)
+                        continue
+
+                if task["recovery"]["retryable"] and task["recovery"].get("classification") != "dependency_install":
                     task["status"] = "retry_scheduled"
                     await self.runtime._set_run_status(state, "recovering", current_node="recovery")
                     await self._emit(
@@ -386,6 +394,133 @@ class ActionExecutor:
         except Exception:
             recovery_task["status"] = "failed"
         return None
+
+    async def _handle_dependency_install(self, state: Dict[str, Any], task: Dict[str, Any]) -> bool:
+        """Install missing Python packages via package_manager with approval, then retry.
+
+        Returns True if all packages were installed successfully and the task should retry.
+        """
+        import logging
+        import uuid as _uuid
+        logger = logging.getLogger(__name__)
+
+        recovery = task.get("recovery") or {}
+        missing_modules = recovery.get("missing_modules") or []
+        if not missing_modules:
+            return False
+
+        packages = [m["package"] for m in missing_modules]
+        logger.info(
+            "Dependency install requested for task %s: %s",
+            task.get("id"), ", ".join(packages),
+        )
+
+        all_installed = True
+        for pkg_info in missing_modules:
+            package = pkg_info["package"]
+            install_task = {
+                "id": f"dep-install-{_uuid.uuid4().hex[:8]}",
+                "title": f"Install missing package: {package}",
+                "tool": "package_manager",
+                "action": "install",
+                "params": {"manager": "pip", "package": package, "require_admin": False},
+                "intent": {"goal": f"Install {package} so the sandbox script can run"},
+                "policy_metadata": {},
+                "depends_on": [],
+                "status": "pending",
+                "attempt": 0,
+                "max_attempts": 1,
+                "recovery": None,
+                "requires_approval": True,
+                "approval_granted": False,
+                "approval_id": None,
+                "approval_grant_id": None,
+                "approval_scope": None,
+                "pause_context": None,
+                "result": None,
+                "error": None,
+                "reflection": None,
+                "is_dependency_install": True,
+                "original_task_id": task["id"],
+            }
+
+            state["tasks"].append(install_task)
+
+            await self.runtime._set_run_status(state, "recovering", current_node="policy")
+            await self._emit(
+                "dependency_install_requested",
+                {
+                    "request_id": state["request_id"],
+                    "original_task_id": task["id"],
+                    "install_task_id": install_task["id"],
+                    "package": package,
+                    "module": pkg_info.get("module", package),
+                },
+                state=state,
+            )
+
+            safety_result = await self.runtime.safety.execute(
+                {
+                    "inputs": state["inputs"],
+                    "current_task": install_task,
+                    "runtime_mode": "heuristic",
+                }
+            )
+            install_task["policy_metadata"] = safety_result
+            approval_mode = safety_result.get("approval_mode", "single")
+
+            if approval_mode != "none":
+                install_task["requires_approval"] = True
+                handoff = {
+                    "task_id": install_task["id"],
+                    "title": f"Instalar pacote Python: {package}",
+                    "description": (
+                        f"O script falhou porque o pacote '{package}' nao esta instalado. "
+                        f"Deseja instalar via pip?"
+                    ),
+                    "approval_mode": approval_mode,
+                    "tool": "package_manager",
+                    "action": "install",
+                    "params": install_task["params"],
+                    "risk_level": "medium",
+                }
+                await self.runtime._pause_for_handoff(state, handoff)
+                raise RunPausedError()
+
+            try:
+                install_task["attempt"] = 1
+                install_task["status"] = "running"
+                result = await self.runtime.execution_layer.execute_tool(
+                    inputs=state["inputs"],
+                    task=install_task,
+                    cancel_event=self.runtime._cancel_event_for(state["request_id"]),
+                )
+                install_task["result"] = result
+                state["outputs"][install_task["id"]] = result
+                action_status = (result.get("action_result") or {}).get("status", "failed")
+                if action_status == "succeeded":
+                    install_task["status"] = "completed"
+                    logger.info("Package %s installed successfully", package)
+                    await self._emit(
+                        "dependency_installed",
+                        {
+                            "request_id": state["request_id"],
+                            "package": package,
+                            "install_task_id": install_task["id"],
+                        },
+                        state=state,
+                    )
+                else:
+                    install_task["status"] = "failed"
+                    logger.warning("Failed to install package %s", package)
+                    all_installed = False
+            except Exception as install_exc:
+                install_task["status"] = "failed"
+                install_task["error"] = str(install_exc)
+                logger.warning("Exception installing package %s: %s", package, install_exc)
+                all_installed = False
+
+        return all_installed
 
     def _resolve_graph_recovery_target(self, state: Dict[str, Any], recovery: Dict[str, Any]) -> Optional[str]:
         """Ask the RuntimeManager's graph executor to find the best recovery node."""

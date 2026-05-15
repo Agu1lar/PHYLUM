@@ -89,6 +89,7 @@ These capabilities have graduated from the roadmap and are part of PHYLUM's curr
 - **Tool result compaction**: `_compact_tool_result()` strips binary data, caps stdout/stderr at 1500 chars, removes internal diagnostic fields, and limits total tool result size to 3000 chars before sending to the LLM.
 - **Compact system prompt**: the system prompt was reduced by 82% (from ~1933 tokens to ~357 tokens), focusing on actionable directives rather than verbose examples. Includes a hint for `ConvertTo-Json` over `Format-Table` to save output tokens.
 - **Anthropic message merging**: consecutive tool results are merged into a single `user` message with multiple `tool_result` blocks, preventing HTTP 400 errors from Anthropic's alternating-role requirement.
+- **Automatic dependency management**: when a sandbox script fails with `ModuleNotFoundError`/`ImportError`, the system detects the missing package (with a mapping of 25+ known module→package pairs like `cv2`→`opencv-python`, `PIL`→`Pillow`), routes through the safety approval node (`approval_mode: single`), installs via `pip`, and retries the original script — all without wasting an LLM step.
 
 ---
 
@@ -196,6 +197,7 @@ Three compiled graph topologies: **agentic** (LLM-driven), **local_heuristic** (
 - **Isolated sandbox** for Python and PowerShell with timeout, cancellation and artifact collection
 - **Auto-inject COM init**: sandbox scripts using win32com automatically receive `pythoncom.CoInitialize()` and `try/except` wrapper
 - **Sync fallback**: when `asyncio.create_subprocess_exec` fails with `NotImplementedError` (certain Windows configs), the sandbox falls back to `subprocess.run` via thread
+- **Automatic dependency install**: if a script fails with `ModuleNotFoundError`, the system detects the missing package (25+ known mappings like `cv2`→`opencv-python`), requests approval, installs via pip, and retries — without wasting an LLM step
 - **Scripts generated in real time** to solve unforeseen problems
 - **Multi-source orchestration**: a single script can read emails (Outlook COM), cross-reference with a spreadsheet (openpyxl), and generate a report
 - **Auto-creation of micro-tools**: tools persisted to disk and reusable across runs
@@ -432,7 +434,7 @@ The backend exposes endpoints to verify operational readiness:
 
 ## Test coverage
 
-**1200+ tests** across 49 suites, organized by component:
+**1230+ tests** across 50 suites, organized by component:
 
 | Suite | Coverage |
 |---|---|
@@ -459,6 +461,7 @@ The backend exposes endpoints to verify operational readiness:
 | `test_subagent_branches.py` | Subagent parallel branches, budget enforcement, cascading cancel |
 | `test_context_window.py` | ContextWindowManager, compression, emergency drop |
 | `test_multi_provider_client.py` | LLM API retry, Anthropic message merging, LLMApiError |
+| `test_dependency_install.py` | Missing module detection, module→package mapping, recovery classification, approval flow |
 | Others (26 suites) | Runtime, providers, shell, filesystem, network, planner, reflection, downloads, extended thinking, parallel calls, agentic discovery, persistence, and more |
 
 ---
@@ -475,9 +478,9 @@ The system already has ~30 modules with distinct responsibilities. The biggest r
 - [ ] Explicit boundaries between modules with contract tests
 - [ ] Architectural invariants documented and enforced by CI
 
-#### Sandbox hardening
+#### Sandbox hardening (remaining)
 
-Dynamic Python/PowerShell execution in an agentic environment requires robust protections:
+Automatic dependency detection and approval-gated install are implemented. What's still missing:
 
 - [ ] Capability isolation (restrict access per script)
 - [ ] Filesystem scopes (limit I/O per run)

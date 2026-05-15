@@ -3,6 +3,7 @@
 # either version 3 of the License, or any later version.
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from execution_strategy import ExecutionStrategy
@@ -20,6 +21,7 @@ _SUGGESTED_ACTION_TO_TARGET_NODE = {
     "verify_outcome": "reflection",
     "ask_user": "handoff",
     "narrow_selector": "executor",
+    "dependency_install": "executor",
     "stop": "fail",
 }
 
@@ -131,6 +133,33 @@ class RecoveryEngine:
                 "recommended_followups": ["tool_office", "tool_windows_ui", "browser.bridge_native_dialog"],
             })
 
+        if issue_kind == "missing_dependency":
+            missing_modules = self._extract_missing_modules(action_result)
+            if missing_modules:
+                return self._attach_target_node({
+                    "classification": "dependency_install",
+                    "retryable": True,
+                    "needs_user": False,
+                    "suggested_action": "dependency_install",
+                    "reason": f"Missing Python package(s): {', '.join(m['package'] for m in missing_modules)}",
+                    "missing_modules": missing_modules,
+                    "original_task": {"tool": tool, "action": action, "params": task.get("params")},
+                    "recommended_followups": [],
+                })
+
+        missing_modules = self._extract_missing_modules(action_result)
+        if missing_modules:
+            return self._attach_target_node({
+                "classification": "dependency_install",
+                "retryable": True,
+                "needs_user": False,
+                "suggested_action": "dependency_install",
+                "reason": f"Missing Python package(s): {', '.join(m['package'] for m in missing_modules)}",
+                "missing_modules": missing_modules,
+                "original_task": {"tool": tool, "action": action, "params": task.get("params")},
+                "recommended_followups": [],
+            })
+
         if status in {"blocked", "needs_input"}:
             return self._attach_target_node({
                 "classification": "needs_user",
@@ -225,6 +254,21 @@ class RecoveryEngine:
                 "suggested_action": "switch_tooling",
                 "reason": issue.get("message") or "automation path unavailable",
             })
+
+        if "modulenotfounderror" in message or "no module named" in message:
+            missing = self._extract_missing_modules_from_error(error)
+            if missing:
+                return self._attach_target_node({
+                    "classification": "dependency_install",
+                    "retryable": True,
+                    "needs_user": False,
+                    "suggested_action": "dependency_install",
+                    "reason": f"Missing Python package(s): {', '.join(m['package'] for m in missing)}",
+                    "missing_modules": missing,
+                    "original_task": {"tool": tool, "action": action, "params": task.get("params")},
+                    "recommended_followups": [],
+                })
+
         if not retryable and not issue_kind and tool in {"shell", "browser", "package_manager", "web", "windows_ui"} and attempt < max_attempts:
             retryable = True
         if not retryable:
@@ -240,6 +284,31 @@ class RecoveryEngine:
             "suggested_action": "retry" if retryable else "stop",
             "reason": "default recovery policy",
         })
+
+    @staticmethod
+    def _extract_missing_modules(action_result: Dict[str, Any]) -> List[Dict[str, str]]:
+        """Extract missing module info from a tool's action_result (sandbox/shell)."""
+        data = action_result.get("data") or {}
+        modules = data.get("missing_modules") or []
+        if modules:
+            return modules
+        details = action_result.get("details") or {}
+        modules = details.get("missing_modules") or []
+        if modules:
+            return modules
+        stderr = data.get("stderr") or details.get("stderr") or ""
+        if stderr and ("ModuleNotFoundError" in stderr or "No module named" in stderr):
+            from sandbox_executor import SandboxExecutor
+            return SandboxExecutor.detect_missing_modules(stderr)
+        return []
+
+    @staticmethod
+    def _extract_missing_modules_from_error(error: str) -> List[Dict[str, str]]:
+        """Extract missing module info from an error string."""
+        if not error:
+            return []
+        from sandbox_executor import SandboxExecutor
+        return SandboxExecutor.detect_missing_modules(error)
 
     def question_for_failure(self, task: Dict[str, Any], error: str) -> Dict[str, Any]:
         tool = str(task.get("tool") or "")

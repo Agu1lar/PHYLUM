@@ -36,8 +36,41 @@ def _ensure_sandbox_root() -> Path:
     return SANDBOX_ROOT
 
 
+_MODULE_ERROR_RE = re.compile(
+    r"(?:ModuleNotFoundError|ImportError):\s*(?:No module named\s+)?['\"]?([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)?)['\"]?",
+)
+
+_MODULE_TO_PACKAGE: Dict[str, str] = {
+    "cv2": "opencv-python",
+    "PIL": "Pillow",
+    "sklearn": "scikit-learn",
+    "yaml": "pyyaml",
+    "bs4": "beautifulsoup4",
+    "attr": "attrs",
+    "dateutil": "python-dateutil",
+    "docx": "python-docx",
+    "pptx": "python-pptx",
+    "dotenv": "python-dotenv",
+    "serial": "pyserial",
+    "gi": "PyGObject",
+    "wx": "wxPython",
+    "Crypto": "pycryptodome",
+    "usb": "pyusb",
+    "lxml": "lxml",
+    "magic": "python-magic",
+    "jose": "python-jose",
+    "jwt": "PyJWT",
+    "socks": "PySocks",
+    "dns": "dnspython",
+    "git": "gitpython",
+}
+
+
 class SandboxResult:
-    __slots__ = ("ok", "stdout", "stderr", "returncode", "script_path", "work_dir", "artifacts", "error")
+    __slots__ = (
+        "ok", "stdout", "stderr", "returncode", "script_path",
+        "work_dir", "artifacts", "error", "missing_modules",
+    )
 
     def __init__(
         self,
@@ -50,6 +83,7 @@ class SandboxResult:
         work_dir: Optional[str] = None,
         artifacts: Optional[List[str]] = None,
         error: Optional[str] = None,
+        missing_modules: Optional[List[Dict[str, str]]] = None,
     ):
         self.ok = ok
         self.stdout = stdout
@@ -59,9 +93,10 @@ class SandboxResult:
         self.work_dir = work_dir
         self.artifacts = artifacts or []
         self.error = error
+        self.missing_modules = missing_modules or []
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "ok": self.ok,
             "stdout": self.stdout[:MAX_OUTPUT_LENGTH],
             "stderr": self.stderr[:MAX_OUTPUT_LENGTH],
@@ -71,12 +106,29 @@ class SandboxResult:
             "artifacts": self.artifacts,
             "error": self.error,
         }
+        if self.missing_modules:
+            d["missing_modules"] = self.missing_modules
+        return d
 
 
 class SandboxExecutor:
     def __init__(self, *, root: Optional[Path] = None, default_timeout: int = DEFAULT_TIMEOUT):
         self.root = root or SANDBOX_ROOT
         self.default_timeout = default_timeout
+
+    @staticmethod
+    def detect_missing_modules(stderr: str) -> List[Dict[str, str]]:
+        """Parse stderr for ModuleNotFoundError/ImportError and return structured info."""
+        seen: set = set()
+        results: List[Dict[str, str]] = []
+        for match in _MODULE_ERROR_RE.finditer(stderr):
+            module = match.group(1).split(".")[0]
+            if module in seen:
+                continue
+            seen.add(module)
+            package = _MODULE_TO_PACKAGE.get(module, module)
+            results.append({"module": module, "package": package})
+        return results
 
     def _create_work_dir(self) -> Path:
         _ensure_sandbox_root()
@@ -262,8 +314,10 @@ class SandboxExecutor:
 
         ok = returncode == 0
         error_msg = None
+        missing_modules: List[Dict[str, str]] = []
         if not ok and stderr:
             error_msg = stderr[:500]
+            missing_modules = self.detect_missing_modules(stderr)
 
         return SandboxResult(
             ok=ok,
@@ -274,6 +328,7 @@ class SandboxExecutor:
             work_dir=str(work_dir),
             artifacts=artifacts,
             error=error_msg,
+            missing_modules=missing_modules,
         )
 
     async def _run_process_sync_fallback(
@@ -304,6 +359,7 @@ class SandboxExecutor:
             stdout = result.stdout.decode("utf-8", errors="replace") if result.stdout else ""
             stderr = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
             ok = result.returncode == 0
+            missing_modules = self.detect_missing_modules(stderr) if not ok and stderr else []
             return SandboxResult(
                 ok=ok,
                 stdout=stdout,
@@ -313,6 +369,7 @@ class SandboxExecutor:
                 work_dir=str(work_dir),
                 artifacts=self._collect_artifacts(work_dir, script_path),
                 error=stderr[:500] if not ok and stderr else None,
+                missing_modules=missing_modules,
             )
         except Exception as exc:
             return SandboxResult(ok=False, error=f"{exc.__class__.__name__}: {exc}", script_path=script_path, work_dir=str(work_dir))
