@@ -668,37 +668,6 @@ Ensure that workflows can be replayed identically by isolating non-deterministic
 
 ---
 
-## PHYLUM Manifesto: The Alliance for Digital Sovereignty
-
-### 1. Code is Destiny, Ownership is Yours.
-
-We believe that artificial intelligence should not be a walled garden controlled by the few. If AI is going to manage our digital lives, it must be auditable, local and free. PHYLUM is your sovereign territory within Windows.
-
-### 2. Privacy is Not a Setting, It's the Default.
-
-Data is an extension of the human mind. In PHYLUM, processing is local-first. Your documents, passwords and routines never feed third-party models. Privacy is protected by the physics of your hardware, not by mutable terms of service.
-
-### 3. Collective Intelligence via P2P.
-
-No user should have to teach the same thing to the machine twice. We are building a Digital Immune System where every automation discovery and every selector fix is shared anonymously and in a decentralized manner. If one PHYLUM learns, all PHYLUMs evolve.
-
-### 4. The Economy of Collaboration (DePIN).
-
-AI processing is the oil of the 21st century. Through PHYLUM, we transform idle hardware into assets. By providing computational power to the network, you are rewarded. The goal is a self-sustaining network where high-performance automation pays for itself, democratizing access to cutting-edge models without relying on credit cards or abusive subscriptions.
-
-### 5. End of the Silo, Beginning of Orchestration.
-
-We refuse to be hostages of closed ecosystems. PHYLUM was born to be the universal translator between software, APIs and human intentions. If a tool exists, PHYLUM must know how to operate it. If it doesn't exist, PHYLUM must know how to create it.
-
-### Pillars of the Future (Decentralization Roadmap)
-
-- **Global Strategy Mesh**: P2P database of execution graphs and Strategy Records validated by reputation.
-- **Neural Marketplace**: decentralized token exchange for inference. Provide VRAM, receive tokens; use tokens to access models your local hardware cannot support.
-- **Privacy-Safe Learning**: knowledge protocols that share task logic without exposing data content.
-- **Anti-Fragile Governance**: a system where the evolution of code and tools is driven by real success on users' machines, not by shareholder profit.
-
----
-
 ## Supplementary documentation
 
 - `README_PROJECT.md` — complete technical overview of the runtime and architecture
